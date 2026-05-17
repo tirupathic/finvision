@@ -5,6 +5,7 @@ import http from 'node:http';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import process from 'node:process';
 
 // ─── Disk cache ───────────────────────────────────────────────────────────────
 const CACHE_DIR = '/tmp/finvision-nasdaq-cache';
@@ -259,15 +260,16 @@ function nasdaqSummaryToYF(raw, yfExtra = {}) {
     quoteSummary: {
       result: [{
         summaryDetail: {
-          marketCap:           { raw: cap  || null },
-          trailingPE:          { raw: pe   },
-          forwardPE:           { raw: fwdPE },
-          dividendYield:       { raw: divY },
-          beta:                { raw: beta },
-          fiftyTwoWeekHigh:    { raw: h52  },
-          fiftyTwoWeekLow:     { raw: l52  },
+          marketCap:           { raw: cap    || null },
+          trailingPE:          { raw: pe     },
+          forwardPE:           { raw: fwdPE  },
+          dividendRate:        { raw: annDiv },
+          dividendYield:       { raw: divY   },
+          beta:                { raw: beta   },
+          fiftyTwoWeekHigh:    { raw: h52    },
+          fiftyTwoWeekLow:     { raw: l52    },
           averageVolume:       { raw: avgVol || null },
-          regularMarketVolume: { raw: null  },
+          regularMarketVolume: { raw: null   },
           priceTarget:         { raw: target },
         },
         defaultKeyStatistics: {
@@ -633,10 +635,7 @@ async function fetchGoogleNews(query, limit = 12) {
 
 // ─── Vite plugin ──────────────────────────────────────────────────────────────
 function nasdaqProxy() {
-  return {
-    name: 'nasdaq-proxy',
-    configureServer(server) {
-      server.middlewares.use(async (req, res, next) => {
+  async function middleware(req, res, next) {
         if (!req.url.startsWith('/api/yahoo/')) return next();
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Cache-Control', 'no-store');
@@ -753,8 +752,12 @@ function nasdaqProxy() {
           res.statusCode = 502;
           res.end(JSON.stringify({ error: err.message }));
         }
-      });
-    },
+  }
+
+  return {
+    name: 'nasdaq-proxy',
+    configureServer(server)        { server.middlewares.use(middleware); },
+    configurePreviewServer(server) { server.middlewares.use(middleware); },
   };
 }
 
@@ -766,6 +769,6 @@ export default defineConfig({
   preview: {
     host: '0.0.0.0',
     port: process.env.PORT ? parseInt(process.env.PORT) : 4173,
-    allowedHosts: true // 👈 This allows Render to connect without blocking the host
+    allowedHosts: true
   }
 })
