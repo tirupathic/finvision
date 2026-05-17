@@ -6,6 +6,15 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
+export default defineConfig({
+  preview: {
+    host: '0.0.0.0',
+    port: process.env.PORT ? parseInt(process.env.PORT) : 4173,
+    allowedHosts: true // 👈 Allows all domains
+  }
+})
+
+
 // ─── Disk cache ───────────────────────────────────────────────────────────────
 const CACHE_DIR = '/tmp/finvision-nasdaq-cache';
 try { mkdirSync(CACHE_DIR, { recursive: true }); } catch {}
