@@ -1,22 +1,27 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useTabs } from '../context/TabsContext';
+import SymbolTabBar from '../components/SymbolTabBar';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   BarChart, Bar, CartesianGrid, ComposedChart, Line, ReferenceLine, Cell,
+  PieChart, Pie,
 } from 'recharts';
 import {
   TrendingUp, TrendingDown, Star, Share2, Bell, ArrowLeft,
   ExternalLink, Loader2, AlertCircle,
 } from 'lucide-react';
-import { useChart, useSummary, useEarnings, useNews, useInstitutional } from '../hooks/useYahoo';
+import { useChart, useQuote, useSummary, useEarnings, useNews, useInstitutional } from '../hooks/useYahoo';
 import { usePersistedRange } from '../hooks/usePersistedRange';
 import { formatMarketCap, formatVolume, fmt$, colorClass, signStr } from '../services/yahooApi';
 import { generateOptionsChain } from '../services/stockData';
 import { ETF_SET, ETF_INFO } from '../services/etfData';
+import { getSegments } from '../services/revenueSegments';
 import NewsCard from '../components/NewsCard';
 import PerformanceTab from '../components/PerformanceTab';
 import StrategiesTab from '../components/StrategiesTab';
 import AdvancedChart from '../components/AdvancedChart';
+import RollingReturnProbability from '../components/RollingReturnProbability';
 
 const RANGES = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y'];
 const RANGE_MAP = {
@@ -34,6 +39,70 @@ const RANGE_MAP = {
 
 function Skeleton({ className = '' }) {
   return <div className={`bg-[#2a2a2a] rounded-md animate-pulse ${className}`} />;
+}
+
+// ── Technical indicator helpers ───────────────────────────────────────────────
+
+function computeRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d >= 0) gains += d; else losses -= d;
+  }
+  const avgG = gains / period, avgL = losses / period;
+  if (avgL === 0) return 100;
+  return 100 - (100 / (1 + avgG / avgL));
+}
+
+function computeMA(closes, period) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  return slice.reduce((s, v) => s + v, 0) / period;
+}
+
+function computeATR(ohlcv, period = 14) {
+  if (ohlcv.length < period + 1) return null;
+  const trs = ohlcv.slice(1).map((d, i) => {
+    const pc = ohlcv[i].close;
+    return Math.max(d.high - d.low, Math.abs(d.high - pc), Math.abs(d.low - pc));
+  });
+  return trs.slice(-period).reduce((s, v) => s + v, 0) / period;
+}
+
+function pctFrom(closes, lookback) {
+  if (closes.length <= lookback) return null;
+  const base = closes[closes.length - 1 - lookback];
+  const cur  = closes[closes.length - 1];
+  return base > 0 ? ((cur - base) / base) * 100 : null;
+}
+
+function HelpBubble({ tip }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', marginLeft: 3 }}>
+      <span
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        style={{
+          width: 13, height: 13, borderRadius: '50%',
+          background: '#374151', color: '#9ca3af',
+          fontSize: 9, fontWeight: 700, cursor: 'default',
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          border: '1px solid #4b5563', flexShrink: 0,
+        }}>?</span>
+      {show && (
+        <span style={{
+          position: 'absolute', top: '120%', left: '50%', transform: 'translateX(-50%)',
+          background: '#1f2937', border: '1px solid #374151', borderRadius: 8,
+          color: '#d1d5db', fontSize: 11, lineHeight: 1.6,
+          padding: '10px 13px', width: 280, zIndex: 50,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          whiteSpace: 'pre-line', pointerEvents: 'none',
+        }}>{tip}</span>
+      )}
+    </span>
+  );
 }
 
 function StatRow({ label, value, valueClass = 'text-white' }) {
@@ -145,11 +214,17 @@ export default function StockDetail() {
   const navigate = useNavigate();
 
   const [range, setRange]   = usePersistedRange(RANGES, '3M');
-  const [tab, setTab]       = useState('overview');
+  const [tab, setTab]       = useState(() => sessionStorage.getItem(`fv_tab_${SYM}`) || 'overview');
   const [starred, setStarred] = useState(false);
+  const [selExp, setSelExp] = useState(30);
 
-  // Reset to overview when navigating to a different symbol
-  useEffect(() => { setTab('overview'); }, [SYM]);
+  function changeTab(t) {
+    setTab(t);
+    sessionStorage.setItem(`fv_tab_${SYM}`, t);
+  }
+
+  const { addTab } = useTabs();
+  useEffect(() => { if (SYM) addTab(SYM); }, [SYM]);
 
   const { interval, range: yfRange } = RANGE_MAP[range];
 
@@ -160,13 +235,16 @@ export default function StockDetail() {
   const { data: summary, loading: summaryLoading } =
     useSummary(SYM);
 
+  const { data: quoteData } =
+    useQuote(SYM);
+
   const { data: earnings, loading: earningsLoading } =
     useEarnings(SYM);
 
   const { data: news, loading: newsLoading } =
     useNews(SYM, 10);
 
-  const { data: institutional } =
+  const { data: institutional, loading: instLoading } =
     useInstitutional(SYM);
 
   const options = useMemo(
@@ -177,6 +255,61 @@ export default function StockDetail() {
   // ── Derived values ───────────────────────────────────────────────────────────
   const q = chartData;
   const s = summary;
+
+  // ── Options analytics (derived from chain) ───────────────────────────────────
+  const optAnalytics = useMemo(() => {
+    if (!options.length || !q?.price) return null;
+    const price = q.price;
+
+    // ATM strike
+    const atm = options.reduce((b, o) => Math.abs(o.strike - price) < Math.abs(b.strike - price) ? o : b, options[0]);
+    const atmIV = (atm.callIV + atm.putIV) / 2;
+
+    // Expected move per expiry (1σ = IV × sqrt(DTE/365) × price)
+    const expectedMove = (dte) => +(price * (atmIV / 100) * Math.sqrt(dte / 365)).toFixed(2);
+
+    // Put/Call OI ratio
+    const totalCallOI = options.reduce((s, o) => s + o.callOI, 0);
+    const totalPutOI  = options.reduce((s, o) => s + o.putOI,  0);
+    const pcRatio = totalCallOI > 0 ? +(totalPutOI / totalCallOI).toFixed(2) : null;
+
+    // IV skew: nearest OTM put IV minus nearest OTM call IV
+    const otmPuts  = options.filter(o => o.strike < price);
+    const otmCalls = options.filter(o => o.strike > price);
+    const nearPut  = otmPuts.length  ? otmPuts[otmPuts.length - 1]  : null;
+    const nearCall = otmCalls.length ? otmCalls[0] : null;
+    const ivSkew   = nearPut && nearCall ? +(nearPut.putIV - nearCall.callIV).toFixed(1) : null;
+
+    // Max pain: strike where total dollar value paid to buyers is minimized
+    const maxPainStrike = options.map(candidate => {
+      const payout = options.reduce((sum, o) => {
+        return sum
+          + o.callOI * Math.max(candidate.strike - o.strike, 0)
+          + o.putOI  * Math.max(o.strike - candidate.strike, 0);
+      }, 0);
+      return { strike: candidate.strike, payout };
+    }).reduce((min, x) => x.payout < min.payout ? x : min).strike;
+
+    // ATM straddle cost (call ask + put ask)
+    const straddleCost = +(atm.callAsk + atm.putAsk).toFixed(2);
+
+    // Gamma risk: peak gamma ~ ATM (rough proxy: 1 / (price × IV/100 × sqrt(1/252)))
+    const gammaRisk = +((1 / (price * (atmIV / 100) * Math.sqrt(1 / 252))) / price * 100).toFixed(4);
+
+    // IV Rank proxy: use ATM IV vs min/max IV in chain
+    const ivs = options.flatMap(o => [o.callIV, o.putIV]);
+    const ivMin = Math.min(...ivs), ivMax = Math.max(...ivs);
+    const ivRank = ivMax > ivMin ? +((atmIV - ivMin) / (ivMax - ivMin) * 100).toFixed(0) : null;
+
+    return {
+      price, atm, atmIV, expectedMove,
+      totalCallOI, totalPutOI, pcRatio,
+      nearPut, nearCall, ivSkew,
+      maxPainStrike, straddleCost,
+      gammaRisk, ivRank,
+    };
+  }, [options, q?.price]);
+
   const up = q ? q.pct >= 0 : true;
   const color = up ? '#22c55e' : '#ef4444';
 
@@ -195,11 +328,13 @@ export default function StockDetail() {
   const etfInfo = ETF_INFO[SYM] ?? null;
 
   const tabs = isETF
-    ? ['overview', 'chart', 'etf', 'holders', 'options', 'performance', 'strategies', 'news']
-    : ['overview', 'chart', 'financials', 'earnings', 'holders', 'options', 'performance', 'strategies', 'news'];
+    ? ['overview', 'chart', 'etf', 'holders', 'options', 'return dist', 'performance', 'trade ideas', 'news']
+    : ['overview', 'chart', 'financials', 'earnings', 'holders', 'options', 'return dist', 'performance', 'trade ideas', 'news'];
 
   return (
     <div className="max-w-screen-xl mx-auto px-4 py-6">
+      <SymbolTabBar activeSymbol={SYM} />
+
       <button onClick={() => navigate(-1)}
         className="inline-flex items-center gap-1 text-gray-500 hover:text-white text-sm mb-4 transition-colors">
         <ArrowLeft size={14} /> Back
@@ -277,47 +412,248 @@ export default function StockDetail() {
       {/* ── Tabs ───────────────────────────────────────────────────────────── */}
       <div className="flex gap-1 border-b border-[#2a2a2a] mb-6 overflow-x-auto">
         {tabs.map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} onClick={() => changeTab(t)}
             className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
               tab === t ? 'border-indigo-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-            {t === 'etf' ? 'ETF' : t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === 'etf' ? 'ETF' : t === 'trade ideas' ? 'Trade Ideas' : t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
 
       {/* ── Overview ───────────────────────────────────────────────────────── */}
-      {tab === 'overview' && (
+      {tab === 'overview' && (() => {
+        const closes  = q?.ohlcv?.map(d => d.close) ?? [];
+        const price   = q?.price ?? 0;
+        const rsi     = computeRSI(closes);
+        const ma20    = computeMA(closes, 20);
+        const ma50    = computeMA(closes, 50);
+        const ma200   = computeMA(closes, 200);
+        const atr     = computeATR(q?.ohlcv ?? []);
+        const hi52    = s?.week52High ?? quoteData?.week52High ?? q?.week52High;
+        const lo52    = s?.week52Low  ?? quoteData?.week52Low  ?? q?.week52Low;
+        const rangePct = (hi52 && lo52 && hi52 > lo52)
+          ? ((price - lo52) / (hi52 - lo52)) * 100 : null;
+        const avgVol   = s?.avgVolume ?? quoteData?.avgVolume;
+        const volRatio = (q?.volume && avgVol) ? q.volume / avgVol : null;
+
+        const periodReturns = [
+          { label: '1D',  val: q?.pct ?? null },
+          { label: '1W',  val: pctFrom(closes, 5) },
+          { label: '1M',  val: pctFrom(closes, 21) },
+          { label: '3M',  val: pctFrom(closes, 63) },
+          { label: '6M',  val: pctFrom(closes, 126) },
+          { label: 'YTD', val: (() => {
+              const first = q?.ohlcv?.find(d => d.date.startsWith(new Date().getFullYear().toString()));
+              return first ? ((price - first.close) / first.close) * 100 : null;
+            })() },
+        ].filter(p => p.val !== null);
+
+        const maxAbsRet = Math.max(...periodReturns.map(p => Math.abs(p.val ?? 0)), 0.1);
+
+        const rsiLabel = rsi == null ? '—'
+          : rsi < 30 ? 'Oversold' : rsi > 70 ? 'Overbought' : 'Neutral';
+        const rsiColor = rsi == null ? '#6b7280'
+          : rsi < 30 ? '#22c55e' : rsi > 70 ? '#ef4444' : '#fbbf24';
+
+        const maRow = (label, ma) => {
+          if (!ma || !price) return null;
+          const diff = ((price - ma) / ma) * 100;
+          return { label, ma, diff, above: diff >= 0 };
+        };
+
+        const maRows = [maRow('20-day MA', ma20), maRow('50-day MA', ma50), maRow('200-day MA', ma200)].filter(Boolean);
+
+        const recentEarnings = earnings?.slice?.(-6) ?? [];
+
+        return (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-5">
-            {/* Chart */}
+
+            {/* ── Period Returns ── */}
             <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-white font-semibold">Price Chart</h2>
-                <div className="flex items-center gap-2">
-                  {chartLoading && <Loader2 size={13} className="text-indigo-400 animate-spin" />}
-                  <RangeSelector range={range} onChange={setRange} />
+              <h2 className="text-white font-semibold mb-4">Period Returns</h2>
+              {periodReturns.length === 0 ? (
+                <p className="text-gray-600 text-sm">Load a longer range to see period returns.</p>
+              ) : (
+                <div className="space-y-2.5">
+                  {periodReturns.map(({ label, val }) => {
+                    const pos = val >= 0;
+                    const barW = Math.abs(val) / maxAbsRet * 100;
+                    return (
+                      <div key={label} className="flex items-center gap-3">
+                        <span className="text-gray-500 text-xs w-8 shrink-0">{label}</span>
+                        <div className="flex-1 flex items-center gap-2">
+                          {/* left side (negative) */}
+                          <div className="flex-1 flex justify-end">
+                            {!pos && (
+                              <div className="h-4 rounded-l-sm bg-red-500/70"
+                                style={{ width: `${barW}%` }} />
+                            )}
+                          </div>
+                          {/* center zero line */}
+                          <div className="w-px h-4 bg-[#3a3a3a] shrink-0" />
+                          {/* right side (positive) */}
+                          <div className="flex-1">
+                            {pos && (
+                              <div className="h-4 rounded-r-sm bg-green-500/70"
+                                style={{ width: `${barW}%` }} />
+                            )}
+                          </div>
+                        </div>
+                        <span className={`text-xs font-mono w-16 text-right shrink-0 ${pos ? 'text-green-400' : 'text-red-400'}`}>
+                          {pos ? '+' : ''}{val.toFixed(2)}%
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-              {chartLoading && !q?.ohlcv?.length ? (
-                <Skeleton className="w-full h-60" />
-              ) : q?.ohlcv?.length ? (
-                <PriceChart ohlcv={q.ohlcv} symbol={SYM} color={color} />
-              ) : null}
+              )}
             </div>
 
-            {/* Volume */}
-            {q?.ohlcv?.length > 0 && (
+            {/* ── Technical Snapshot ── */}
+            <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+              <h2 className="text-white font-semibold mb-4">Technical Snapshot</h2>
+              <div className="grid grid-cols-2 gap-4">
+
+                {/* RSI */}
+                <div className="bg-[#111] rounded-lg p-3">
+                  <div className="text-gray-500 text-xs mb-1">RSI (14)</div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-white font-mono font-bold text-lg">
+                      {rsi != null ? rsi.toFixed(1) : '—'}
+                    </span>
+                    <span className="text-xs font-semibold" style={{ color: rsiColor }}>{rsiLabel}</span>
+                  </div>
+                  {rsi != null && (
+                    <div className="mt-2 h-1.5 bg-[#2a2a2a] rounded-full overflow-hidden relative">
+                      <div className="absolute inset-0 rounded-full"
+                        style={{ background: 'linear-gradient(to right, #22c55e, #fbbf24, #ef4444)' }} />
+                      <div className="absolute top-1/2 -translate-y-1/2 w-2 h-2 bg-white rounded-full border border-black shadow"
+                        style={{ left: `calc(${rsi}% - 4px)` }} />
+                    </div>
+                  )}
+                  <div className="flex justify-between text-[9px] text-gray-600 mt-0.5">
+                    <span>0</span><span>30</span><span>70</span><span>100</span>
+                  </div>
+                </div>
+
+                {/* ATR / Volatility */}
+                <div className="bg-[#111] rounded-lg p-3">
+                  <div className="text-gray-500 text-xs mb-1">ATR (14) — Daily Range</div>
+                  <div className="text-white font-mono font-bold text-lg">
+                    {atr != null ? `$${atr.toFixed(2)}` : '—'}
+                  </div>
+                  <div className="text-gray-500 text-xs mt-1">
+                    {atr && price ? `${((atr / price) * 100).toFixed(2)}% of price` : 'Not enough data'}
+                  </div>
+                </div>
+
+                {/* 52-Week Range */}
+                <div className="bg-[#111] rounded-lg p-3 col-span-2">
+                  <div className="text-gray-500 text-xs mb-2">52-Week Range</div>
+                  {rangePct != null ? (
+                    <>
+                      <div className="relative h-2 bg-[#2a2a2a] rounded-full">
+                        <div className="absolute h-full rounded-full bg-gradient-to-r from-red-500/60 via-yellow-500/60 to-green-500/60"
+                          style={{ width: '100%' }} />
+                        <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full border-2 border-[#0a0a0a] shadow"
+                          style={{ left: `calc(${rangePct}% - 6px)` }} />
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-500 mt-1.5">
+                        <span className="text-red-400 font-mono">{fmt$(lo52)}</span>
+                        <span className="text-white font-mono font-semibold">{fmt$(price)} ({rangePct.toFixed(0)}%)</span>
+                        <span className="text-green-400 font-mono">{fmt$(hi52)}</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-gray-600 mt-0.5">
+                        <span>52W Low</span><span>52W High</span>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-gray-600 text-xs">52-week data unavailable</p>
+                  )}
+                </div>
+
+                {/* Volume vs Average */}
+                <div className="bg-[#111] rounded-lg p-3">
+                  <div className="text-gray-500 text-xs mb-1">Volume vs Avg</div>
+                  <div className={`font-mono font-bold text-lg ${volRatio == null ? 'text-white' : volRatio >= 1.5 ? 'text-yellow-400' : volRatio >= 1 ? 'text-green-400' : 'text-gray-400'}`}>
+                    {volRatio != null ? `${volRatio.toFixed(2)}×` : '—'}
+                  </div>
+                  <div className="text-gray-500 text-xs mt-1">
+                    {q?.volume ? formatVolume(q.volume) : '—'} today
+                  </div>
+                </div>
+
+                {/* Distance from highs */}
+                <div className="bg-[#111] rounded-lg p-3">
+                  <div className="text-gray-500 text-xs mb-1">From 52W High</div>
+                  {hi52 && price ? (
+                    <>
+                      <div className={`font-mono font-bold text-lg ${price >= hi52 ? 'text-green-400' : 'text-red-400'}`}>
+                        {(((price - hi52) / hi52) * 100).toFixed(2)}%
+                      </div>
+                      <div className="text-gray-500 text-xs mt-1">High: {fmt$(hi52)}</div>
+                    </>
+                  ) : <div className="text-gray-600 text-xs">—</div>}
+                </div>
+
+              </div>
+
+              {/* Moving Averages */}
+              {maRows.length > 0 && (
+                <div className="mt-4 border-t border-[#2a2a2a] pt-4">
+                  <div className="text-gray-500 text-xs font-semibold mb-2 uppercase tracking-wide">Moving Averages</div>
+                  <div className="space-y-2">
+                    {maRows.map(({ label, ma, diff, above }) => (
+                      <div key={label} className="flex items-center justify-between">
+                        <span className="text-gray-500 text-xs">{label}</span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-gray-400 font-mono text-xs">{fmt$(ma)}</span>
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${above ? 'text-green-400 bg-green-500/10' : 'text-red-400 bg-red-500/10'}`}>
+                            {above ? '▲' : '▼'} {above ? '+' : ''}{diff.toFixed(2)}%
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── Recent Earnings Trend ── */}
+            {!isETF && recentEarnings.length > 0 && (
               <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
-                <h2 className="text-white font-semibold mb-4">Volume</h2>
-                <ResponsiveContainer width="100%" height={90}>
-                  <BarChart data={q.ohlcv.slice(-40)} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-                    <Bar dataKey="volume" fill="#6366f1" opacity={0.6} radius={[2, 2, 0, 0]} isAnimationActive={false} />
-                    <XAxis dataKey="date" hide />
-                    <YAxis hide />
-                  </BarChart>
-                </ResponsiveContainer>
+                <h2 className="text-white font-semibold mb-4">Recent EPS Trend</h2>
+                <div className="flex items-end gap-3 h-24">
+                  {recentEarnings.map((e, i) => {
+                    const maxEps = Math.max(...recentEarnings.map(x => Math.abs(x.actual ?? x.estimate ?? 0)), 0.01);
+                    const h = Math.abs((e.actual ?? e.estimate ?? 0)) / maxEps * 100;
+                    const beat = e.actual != null && e.estimate != null && e.actual >= e.estimate;
+                    const missed = e.actual != null && e.estimate != null && e.actual < e.estimate;
+                    return (
+                      <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                        <span className="text-[10px] text-gray-400 font-mono">
+                          {e.actual != null ? `$${e.actual.toFixed(2)}` : `$${e.estimate?.toFixed(2) ?? '—'}e`}
+                        </span>
+                        <div className="w-full flex items-end justify-center" style={{ height: '64px' }}>
+                          <div
+                            className={`w-4/5 rounded-t-sm ${beat ? 'bg-green-500/80' : missed ? 'bg-red-500/70' : 'bg-indigo-500/70'}`}
+                            style={{ height: `${Math.max(h, 4)}%` }}
+                          />
+                        </div>
+                        <span className="text-[9px] text-gray-600">{e.date?.slice(0, 7) ?? `Q${i + 1}`}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-4 mt-2 text-[10px] text-gray-600">
+                  <span><span className="inline-block w-2 h-2 rounded-sm bg-green-500/80 mr-1" />Beat</span>
+                  <span><span className="inline-block w-2 h-2 rounded-sm bg-red-500/70 mr-1" />Missed</span>
+                  <span><span className="inline-block w-2 h-2 rounded-sm bg-indigo-500/70 mr-1" />Estimate</span>
+                </div>
               </div>
             )}
+
           </div>
 
           {/* Sidebar: Key Stats + About */}
@@ -335,16 +671,18 @@ export default function StockDetail() {
                   <StatRow label="Day Range"
                     value={q?.low && q?.high ? `${fmt$(q.low)} – ${fmt$(q.high)}` : '—'} />
                   <StatRow label="52-Week Range"
-                    value={(s?.week52Low && s?.week52High) || (q?.week52Low && q?.week52High)
-                      ? `${fmt$(s?.week52Low ?? q?.week52Low)} – ${fmt$(s?.week52High ?? q?.week52High)}`
-                      : '—'} />
+                    value={(() => {
+                      const lo = s?.week52Low  ?? quoteData?.week52Low  ?? q?.week52Low;
+                      const hi = s?.week52High ?? quoteData?.week52High ?? q?.week52High;
+                      return (lo && hi) ? `${fmt$(lo)} – ${fmt$(hi)}` : '—';
+                    })()} />
                   <StatRow label="Volume"      value={formatVolume(q?.volume)} />
-                  <StatRow label="Avg. Volume" value={formatVolume(s?.avgVolume)} />
-                  <StatRow label="Market Cap"  value={formatMarketCap(s?.marketCap)} />
-                  <StatRow label="P/E (TTM)"   value={s?.pe?.toFixed(2) ?? '—'} />
-                  <StatRow label="Forward P/E" value={s?.forwardPE?.toFixed(2) ?? '—'} />
-                  <StatRow label="EPS (TTM)"   value={s?.eps ? fmt$(s.eps) : '—'} />
-                  <StatRow label="Beta"        value={s?.beta?.toFixed(2) ?? '—'} />
+                  <StatRow label="Avg. Volume" value={formatVolume(s?.avgVolume ?? quoteData?.avgVolume)} />
+                  <StatRow label="Market Cap"  value={formatMarketCap(s?.marketCap ?? quoteData?.marketCap)} />
+                  <StatRow label="P/E (TTM)"   value={(s?.pe ?? quoteData?.pe)?.toFixed(2) ?? '—'} />
+                  <StatRow label="Forward P/E" value={(s?.forwardPE ?? quoteData?.forwardPE)?.toFixed(2) ?? '—'} />
+                  <StatRow label="EPS (TTM)"   value={(s?.eps ?? quoteData?.eps) ? fmt$(s?.eps ?? quoteData?.eps) : '—'} />
+                  <StatRow label="Beta"        value={(s?.beta ?? quoteData?.beta)?.toFixed(2) ?? '—'} />
                   {s?.dividend > 0 && (
                     <>
                       <StatRow label="Dividend"      value={fmt$(s.dividend)} />
@@ -484,7 +822,8 @@ export default function StockDetail() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Chart tab ──────────────────────────────────────────────────────── */}
       {tab === 'chart' && (
@@ -521,6 +860,121 @@ export default function StockDetail() {
             </div>
           ) : earnings?.length ? (
             <>
+              {/* ── Revenue Streams ── */}
+              {(() => {
+                const seg = getSegments(SYM);
+                const latest = earnings[earnings.length - 1];
+
+                // P&L waterfall from latest quarter
+                const waterfallItems = latest ? [
+                  { label: 'Revenue',          value: latest.revenue,         pct: 100 },
+                  { label: 'Gross Profit',     value: latest.grossProfit,     pct: latest.revenue ? +((latest.grossProfit / latest.revenue) * 100).toFixed(1) : null },
+                  { label: 'Operating Income', value: latest.operatingIncome, pct: latest.revenue ? +((latest.operatingIncome / latest.revenue) * 100).toFixed(1) : null },
+                  { label: 'Net Income',       value: latest.netIncome,       pct: latest.revenue ? +((latest.netIncome / latest.revenue) * 100).toFixed(1) : null },
+                ].filter(i => i.value != null) : [];
+
+                return (
+                  <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+                    <div className="flex items-center gap-2 mb-5">
+                      <h2 className="text-white font-semibold">Revenue Segments</h2>
+                      {seg && <span className="text-gray-600 text-xs ml-1">{seg.period}</span>}
+                    </div>
+
+                    <div className={`grid gap-6 ${seg ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
+
+                      {/* Segment donut + legend */}
+                      {seg && (
+                        <div className="flex flex-col sm:flex-row items-center gap-6">
+                          {/* Donut */}
+                          <div className="shrink-0">
+                            <PieChart width={160} height={160}>
+                              <Pie
+                                data={seg.segments}
+                                dataKey="pct"
+                                nameKey="name"
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={50}
+                                outerRadius={75}
+                                paddingAngle={2}
+                                isAnimationActive={false}
+                              >
+                                {seg.segments.map((s, i) => (
+                                  <Cell key={i} fill={s.color} stroke="transparent" />
+                                ))}
+                              </Pie>
+                              <Tooltip
+                                contentStyle={{ background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 8, fontSize: 12 }}
+                                formatter={(v, name) => [`${v.toFixed(1)}%`, name]}
+                              />
+                            </PieChart>
+                          </div>
+
+                          {/* Legend */}
+                          <div className="flex-1 space-y-2 min-w-0">
+                            {seg.segments.map((s, i) => (
+                              <div key={i} className="flex items-center gap-2">
+                                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }} />
+                                <span className="text-gray-300 text-xs flex-1 truncate">{s.name}</span>
+                                <div className="w-20 bg-[#252525] rounded-full h-1 shrink-0">
+                                  <div className="h-1 rounded-full" style={{ width: `${s.pct}%`, background: s.color }} />
+                                </div>
+                                <span className="text-gray-400 text-xs font-mono w-10 text-right shrink-0">
+                                  {s.pct.toFixed(1)}%
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* P&L Waterfall — latest quarter */}
+                      {waterfallItems.length > 0 && (
+                        <div>
+                          <p className="text-gray-500 text-xs mb-3 font-medium uppercase tracking-wider">
+                            P&amp;L Flow · {latest.period}
+                          </p>
+                          <div className="space-y-2.5">
+                            {waterfallItems.map((item, i) => {
+                              const isNeg  = item.value < 0;
+                              const barPct = item.pct != null ? Math.abs(item.pct) : 0;
+                              const color  = i === 0 ? '#6366f1'
+                                : item.value < 0 ? '#ef4444'
+                                : i === waterfallItems.length - 1 ? '#22c55e'
+                                : '#f59e0b';
+                              return (
+                                <div key={item.label}>
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-gray-400 text-xs">{item.label}</span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-white text-xs font-mono">${Math.abs(item.value).toFixed(2)}B</span>
+                                      {item.pct != null && (
+                                        <span className="text-[10px] font-mono w-12 text-right" style={{ color }}>
+                                          {isNeg ? '-' : ''}{barPct}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="h-1.5 bg-[#252525] rounded-full overflow-hidden">
+                                    <div className="h-full rounded-full transition-all"
+                                      style={{ width: `${Math.min(barPct, 100)}%`, background: color }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {!seg && (
+                            <p className="text-gray-700 text-[10px] mt-4">
+                              Detailed segment breakdown not available for {SYM}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
                   <h2 className="text-white font-semibold mb-4">Revenue ($B)</h2>
@@ -657,6 +1111,46 @@ export default function StockDetail() {
                       <p className="text-gray-600 text-xs mt-0.5">Latest Quarter</p>
                     </div>
                   ))}
+                </div>
+
+                {/* ── Quarterly Metrics Table ── */}
+                <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+                  <h2 className="text-white font-semibold mb-4">Quarterly Financials</h2>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs min-w-[600px]">
+                      <thead>
+                        <tr className="text-left border-b border-[#2a2a2a]">
+                          {['Period', 'Revenue ($B)', 'Rev. Growth', 'Gross Profit ($B)', 'Gross Margin', 'Operating Inc. ($B)', 'Net Income ($B)', 'Net Margin', 'EPS'].map(h => (
+                            <th key={h} className="pb-2 pr-4 text-gray-500 font-medium whitespace-nowrap">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1f1f1f]">
+                        {[...earnings].reverse().map((e, i) => {
+                          const fmt  = v => v != null ? `$${(v / 1e9).toFixed(2)}` : '—';
+                          const pct  = v => v != null ? `${v >= 0 ? '+' : ''}${v}%` : '—';
+                          const pctCls = v => v == null ? 'text-gray-600' : v >= 0 ? 'text-green-400' : 'text-red-400';
+                          const marCls = v => v == null ? 'text-gray-600' : v >= 30 ? 'text-green-400' : v >= 10 ? 'text-yellow-400' : 'text-red-400';
+                          return (
+                            <tr key={i} className={`transition-colors ${i === 0 ? 'bg-indigo-500/5' : 'hover:bg-[#1f1f1f]'}`}>
+                              <td className="py-2 pr-4 font-mono text-white font-semibold whitespace-nowrap">
+                                {e.period}
+                                {i === 0 && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">Latest</span>}
+                              </td>
+                              <td className="py-2 pr-4 font-mono text-gray-300">{fmt(e.revenue)}</td>
+                              <td className={`py-2 pr-4 font-mono font-semibold ${pctCls(e.revenueGrowthYoY)}`}>{pct(e.revenueGrowthYoY)}</td>
+                              <td className="py-2 pr-4 font-mono text-gray-300">{fmt(e.grossProfit)}</td>
+                              <td className={`py-2 pr-4 font-mono font-semibold ${marCls(e.grossMargin)}`}>{e.grossMargin != null ? `${e.grossMargin}%` : '—'}</td>
+                              <td className={`py-2 pr-4 font-mono ${e.operatingIncome >= 0 ? 'text-gray-300' : 'text-red-400'}`}>{fmt(e.operatingIncome)}</td>
+                              <td className={`py-2 pr-4 font-mono ${e.netIncome >= 0 ? 'text-gray-300' : 'text-red-400'}`}>{fmt(e.netIncome)}</td>
+                              <td className={`py-2 pr-4 font-mono font-semibold ${marCls(e.netMargin)}`}>{e.netMargin != null ? `${e.netMargin}%` : '—'}</td>
+                              <td className={`py-2 font-mono font-semibold ${e.eps >= 0 ? 'text-indigo-300' : 'text-red-400'}`}>{e.eps != null ? `$${e.eps.toFixed(2)}` : '—'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
 
                 {/* EPS chart */}
@@ -869,11 +1363,11 @@ export default function StockDetail() {
       {/* ── Holders ────────────────────────────────────────────────────────── */}
       {tab === 'holders' && (
         <div className="space-y-6">
-          {!institutional ? (
+          {instLoading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 size={24} className="text-indigo-400 animate-spin" />
             </div>
-          ) : (institutional.summary?.instPct || institutional.holders?.length > 0) ? (
+          ) : (institutional?.summary?.instPct || institutional?.holders?.length > 0) ? (
             <>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
@@ -890,7 +1384,7 @@ export default function StockDetail() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {institutional.activity && Object.keys(institutional.activity).length > 0 && (
+                {institutional?.activity && Object.keys(institutional.activity).length > 0 && (
                   <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
                     <h2 className="text-white font-semibold mb-4">Recent Activity</h2>
                     <div className="space-y-2">
@@ -916,7 +1410,7 @@ export default function StockDetail() {
                   </div>
                 )}
 
-                {institutional.holders?.length > 0 && (
+                {institutional?.holders?.length > 0 && (
                   <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
                     <h2 className="text-white font-semibold mb-4">Top Institutional Holders</h2>
                     <div className="space-y-0">
@@ -954,33 +1448,366 @@ export default function StockDetail() {
       )}
 
       {/* ── Options ────────────────────────────────────────────────────────── */}
-      {tab === 'options' && (
-        <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-            <div>
-              <h2 className="text-white font-semibold">Options Chain — {SYM}</h2>
-              <p className="text-gray-500 text-xs mt-0.5">
-                Current Price: {q ? fmt$(q.price) : '…'} · Simulated strikes
-              </p>
+      {tab === 'options' && (() => {
+        const oa = optAnalytics;
+        const price = q?.price ?? 0;
+        const dteDays = selExp;
+        const em = oa ? oa.expectedMove(dteDays) : null;
+
+        const DTE_OPTIONS = [
+          { label: '1W',  days: 7   },
+          { label: '2W',  days: 14  },
+          { label: '3W',  days: 21  },
+          { label: '1M',  days: 30  },
+          { label: '45D', days: 45  },
+          { label: '2M',  days: 60  },
+          { label: '3M',  days: 90  },
+          { label: '4M',  days: 120 },
+          { label: '6M',  days: 180 },
+          { label: '9M',  days: 270 },
+          { label: '1Y',  days: 365 },
+        ];
+
+        return (
+        <div className="space-y-5">
+
+          {/* ── Header ── */}
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+            <div className="flex items-start justify-between flex-wrap gap-3 mb-0">
+              <div>
+                <h2 className="text-white font-semibold text-base">Options Analytics — {SYM}</h2>
+                <p className="text-gray-500 text-xs mt-0.5">
+                  Current Price: {q ? fmt$(price) : '…'} · Simulated chain
+                </p>
+              </div>
             </div>
-            <div className="flex gap-2">
-              {['Weekly','Monthly','Quarterly'].map(e => (
-                <button key={e}
-                  className={`text-xs px-3 py-1.5 rounded-md transition-colors ${e==='Monthly' ? 'bg-indigo-600 text-white' : 'text-gray-500 border border-[#2a2a2a] hover:text-white'}`}>
-                  {e}
-                </button>
+            {/* DTE scroll bar */}
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-gray-500 text-[10px] uppercase tracking-wider font-semibold">Days to Expiry</span>
+                <span className="text-indigo-400 font-mono text-xs font-bold">{dteDays} days</span>
+              </div>
+              <div className="overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+                <div className="flex gap-1.5" style={{ width: 'max-content' }}>
+                  {DTE_OPTIONS.map(opt => (
+                    <button
+                      key={opt.days}
+                      onClick={() => setSelExp(opt.days)}
+                      className={`text-xs px-3 py-1.5 rounded-md transition-all whitespace-nowrap font-medium ${
+                        opt.days === selExp
+                          ? 'bg-indigo-600 text-white shadow shadow-indigo-500/30'
+                          : 'text-gray-500 border border-[#2a2a2a] hover:text-white hover:border-indigo-500/40'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Expected move preview strip */}
+              {oa && (
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="flex-1 h-1.5 bg-[#2a2a2a] rounded-full overflow-hidden relative">
+                    <div
+                      className="absolute inset-y-0 left-1/2 -translate-x-1/2 bg-indigo-500/40 rounded-full"
+                      style={{ width: `${Math.min((oa.expectedMove(dteDays) / price) * 200, 100)}%` }}
+                    />
+                    <div className="absolute top-0 bottom-0 left-1/2 w-px bg-white/40" />
+                  </div>
+                  <span className="text-[10px] text-gray-500 shrink-0">
+                    ±{((oa.expectedMove(dteDays) / price) * 100).toFixed(1)}% expected in {dteDays}d
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {oa && (
+          <>
+          {/* ── Key Metrics Row ── */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            {[
+              {
+                label: 'ATM IV',
+                value: `${oa.atmIV.toFixed(1)}%`,
+                sub: oa.ivRank != null ? `IV Rank ${oa.ivRank}` : '',
+                color: oa.atmIV > 40 ? '#ef4444' : oa.atmIV > 25 ? '#fbbf24' : '#22c55e',
+                tip: `Implied Volatility at the money (strike closest to ${fmt$(price)}).\n\nIV reflects the market's expectation of future price swings — higher IV means options are more expensive.\n\n• IV < 20% → cheap options (low fear)\n• IV 20–40% → normal\n• IV > 40% → expensive options (high uncertainty)\n\nIV Rank shows where current IV sits vs the chain range (0 = lowest, 100 = highest).`,
+              },
+              {
+                label: `Expected Move (${dteDays}d)`,
+                value: em ? `±${fmt$(em)}` : '—',
+                sub: em ? `${((em / price) * 100).toFixed(1)}% of price` : '',
+                color: '#818cf8',
+                tip: `Expected Move — the ±1σ range the market is pricing in for this expiry.\n\nFormula: Stock Price × (ATM IV / 100) × √(DTE / 365)\n\nMeaning: there is a ~68% probability the stock stays within ${em ? `${fmt$(price - em)} – ${fmt$(price + em)}` : 'this range'} by expiry.\n\nA wider expected move = higher IV = more expensive options.`,
+              },
+              {
+                label: 'Put/Call OI Ratio',
+                value: oa.pcRatio != null ? oa.pcRatio.toFixed(2) : '—',
+                sub: oa.pcRatio != null
+                  ? oa.pcRatio > 1.3 ? 'Bearish skew' : oa.pcRatio < 0.7 ? 'Bullish skew' : 'Neutral'
+                  : '',
+                color: oa.pcRatio != null
+                  ? oa.pcRatio > 1.3 ? '#ef4444' : oa.pcRatio < 0.7 ? '#22c55e' : '#9ca3af'
+                  : '#9ca3af',
+                tip: `Put/Call Open Interest Ratio = Total Put OI ÷ Total Call OI.\n\nMeasures where traders have positioned their bets:\n\n• > 1.3 → more puts than calls = bearish hedging or speculation\n• 0.7–1.3 → balanced / neutral\n• < 0.7 → more calls than puts = bullish positioning\n\nHigh P/C ratio can also mean hedgers are protecting long positions — not always directionally bearish.`,
+              },
+              {
+                label: 'IV Skew',
+                value: oa.ivSkew != null ? `${oa.ivSkew > 0 ? '+' : ''}${oa.ivSkew}%` : '—',
+                sub: oa.ivSkew != null
+                  ? oa.ivSkew > 2 ? 'Downside fear' : oa.ivSkew < -2 ? 'Upside fear' : 'Flat skew'
+                  : '',
+                color: oa.ivSkew != null
+                  ? oa.ivSkew > 2 ? '#ef4444' : oa.ivSkew < -2 ? '#22c55e' : '#9ca3af'
+                  : '#9ca3af',
+                tip: `IV Skew = nearest OTM Put IV minus nearest OTM Call IV.\n\nPositive skew (puts > calls) = market is paying more to protect against downside — common when traders expect a drop.\n\nNegative skew (calls > puts) = demand for upside calls, often seen before expected positive catalysts (earnings, FDA, etc.).\n\nFlat skew = roughly equal pricing of upside and downside risk.`,
+              },
+              {
+                label: 'Max Pain',
+                value: fmt$(oa.maxPainStrike),
+                sub: `${((oa.maxPainStrike - price) / price * 100).toFixed(1)}% from price`,
+                color: oa.maxPainStrike >= price ? '#22c55e' : '#ef4444',
+                tip: `Max Pain — the strike price where option sellers (usually market makers) lose the least money at expiry.\n\nCalc: for each possible expiry price, sum total dollar payout to all call + put buyers. The strike with the lowest total payout = max pain.\n\nTheory: stocks tend to drift toward max pain near expiry as market makers delta-hedge. Not reliable for individual trades but useful for context.\n\nMax Pain at ${fmt$(oa.maxPainStrike)} means option sellers benefit most if the stock expires right there.`,
+              },
+            ].map(m => (
+              <div key={m.label} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-4">
+                <div className="flex items-center gap-1 text-gray-500 text-[10px] uppercase tracking-wider mb-1">
+                  {m.label}
+                  <HelpBubble tip={m.tip} />
+                </div>
+                <div className="font-mono font-bold text-lg" style={{ color: m.color }}>{m.value}</div>
+                {m.sub && <div className="text-gray-600 text-[10px] mt-0.5">{m.sub}</div>}
+              </div>
+            ))}
+          </div>
+
+          {/* ── Expected Move + OI Distribution ── */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+
+            {/* Expected Move Visual */}
+            <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+              <div className="flex items-center gap-1.5 mb-4">
+                <h3 className="text-white font-semibold text-sm">Expected Move by Expiry</h3>
+                <HelpBubble tip="Shows the ±1σ (68% probability) and ±2σ (95% probability) price range the market is pricing in for each expiry, based on ATM implied volatility." />
+              </div>
+              <div className="space-y-4">
+                {[
+                  { label: 'Weekly',    dte: 7  },
+                  { label: 'Monthly',   dte: 30 },
+                  { label: 'Quarterly', dte: 90 },
+                ].map(({ label, dte }) => {
+                  const move = oa.expectedMove(dte);
+                  const move2 = move * 2;
+                  const lo1 = price - move, hi1 = price + move;
+                  const lo2 = price - move2, hi2 = price + move2;
+                  const pct1 = (move / price * 100).toFixed(1);
+                  const pct2 = (move2 / price * 100).toFixed(1);
+                  return (
+                    <div key={label}>
+                      <div className="flex justify-between text-xs text-gray-400 mb-1.5">
+                        <span className="font-medium">{label}</span>
+                        <span className="text-gray-600">±{pct1}% (1σ) · ±{pct2}% (2σ)</span>
+                      </div>
+                      {/* 2σ range */}
+                      <div className="relative h-7 bg-[#111] rounded-md overflow-hidden">
+                        <div className="absolute inset-y-0 rounded-md bg-indigo-500/10"
+                          style={{ left: `${Math.max(0,(1-move2/price)*50)}%`, right: `${Math.max(0,(1-move2/price)*50)}%` }} />
+                        <div className="absolute inset-y-1 rounded-md bg-indigo-500/20"
+                          style={{ left: `${Math.max(0,(1-move/price)*50)}%`, right: `${Math.max(0,(1-move/price)*50)}%` }} />
+                        {/* current price pin */}
+                        <div className="absolute top-0 bottom-0 w-0.5 bg-white/60" style={{ left: '50%' }} />
+                      </div>
+                      <div className="flex justify-between text-[10px] text-gray-600 mt-1">
+                        <span className="text-red-400 font-mono">{fmt$(lo2)}</span>
+                        <span className="text-red-300 font-mono">{fmt$(lo1)}</span>
+                        <span className="text-white font-mono font-semibold">{fmt$(price)}</span>
+                        <span className="text-green-300 font-mono">{fmt$(hi1)}</span>
+                        <span className="text-green-400 font-mono">{fmt$(hi2)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex gap-4 mt-4 text-[10px] text-gray-600">
+                <span><span className="inline-block w-3 h-2 rounded-sm bg-indigo-500/20 mr-1" />1σ (68%)</span>
+                <span><span className="inline-block w-3 h-2 rounded-sm bg-indigo-500/10 mr-1" />2σ (95%)</span>
+              </div>
+            </div>
+
+            {/* OI Distribution */}
+            <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+              <div className="flex items-center gap-1.5 mb-4">
+                <h3 className="text-white font-semibold text-sm">Open Interest by Strike</h3>
+                <HelpBubble tip="Shows where traders have positioned their bets.\n\nGreen bars = Call OI (bullish bets)\nRed bars = Put OI (bearish bets / hedges)\n\nHigh Call OI at a strike → resistance / call wall\nHigh Put OI at a strike → support / put wall\n\nThe white line marks the current stock price." />
+              </div>
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={options} margin={{ top: 0, right: 0, left: -10, bottom: 0 }}>
+                  <CartesianGrid vertical={false} stroke="#1f2f1f" />
+                  <XAxis dataKey="strike" tick={{ fontSize: 9, fill: '#6b7280' }} tickLine={false} axisLine={false}
+                    tickFormatter={v => `$${v}`} />
+                  <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} tickLine={false} axisLine={false}
+                    tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}k` : v} width={30} />
+                  <Tooltip
+                    contentStyle={{ background: '#111', border: '1px solid #2a2a2a', borderRadius: 6, fontSize: 11 }}
+                    formatter={(v, name) => [v.toLocaleString(), name === 'callOI' ? 'Call OI' : 'Put OI']}
+                    labelFormatter={v => `Strike $${v}`}
+                  />
+                  <ReferenceLine x={options.reduce((b, o) => Math.abs(o.strike - price) < Math.abs(b.strike - price) ? o : b, options[0]).strike}
+                    stroke="#fff" strokeWidth={1} strokeDasharray="4 2" label={{ value: 'ATM', position: 'top', fill: '#9ca3af', fontSize: 9 }} />
+                  <Bar dataKey="callOI" fill="#22c55e" opacity={0.7} radius={[2,2,0,0]} isAnimationActive={false} />
+                  <Bar dataKey="putOI"  fill="#ef4444" opacity={0.7} radius={[2,2,0,0]} isAnimationActive={false} />
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="flex gap-4 text-[10px] text-gray-600 mt-1">
+                <span><span className="inline-block w-2 h-2 rounded-sm bg-green-500/70 mr-1" />Call OI: {oa.totalCallOI.toLocaleString()}</span>
+                <span><span className="inline-block w-2 h-2 rounded-sm bg-red-500/70 mr-1" />Put OI: {oa.totalPutOI.toLocaleString()}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Strategy Breakevens ── */}
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+            <div className="flex items-center gap-1.5 mb-4">
+              <h3 className="text-white font-semibold text-sm">ATM Strategy Breakevens ({dteDays}d)</h3>
+              <HelpBubble tip="Quick-reference breakeven prices for the three most common single-expiry option strategies at the at-the-money strike.\n\nPrices use ask-side premiums (what you'd actually pay). These are estimates — use for planning, not execution." />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {[
+                {
+                  name: 'Long Call', emoji: '📈',
+                  cost: fmt$(oa.atm.callAsk),
+                  be: fmt$(oa.atm.strike + oa.atm.callAsk),
+                  bePct: `+${((oa.atm.callAsk / price) * 100).toFixed(1)}% move needed`,
+                  maxLoss: fmt$(oa.atm.callAsk) + ' / share',
+                  maxGain: 'Unlimited',
+                  color: '#22c55e',
+                  tip: `Long Call — buy the right to purchase ${SYM} at ${fmt$(oa.atm.strike)} by expiry.\n\nBreakeven: Strike + Premium = ${fmt$(oa.atm.strike + oa.atm.callAsk)}\nMax Loss: ${fmt$(oa.atm.callAsk)} (premium paid)\nMax Gain: Unlimited (stock keeps rising)\n\nBest when: strongly bullish, expecting a big move up.`,
+                },
+                {
+                  name: 'Long Put', emoji: '📉',
+                  cost: fmt$(oa.atm.putAsk),
+                  be: fmt$(oa.atm.strike - oa.atm.putAsk),
+                  bePct: `-${((oa.atm.putAsk / price) * 100).toFixed(1)}% move needed`,
+                  maxLoss: fmt$(oa.atm.putAsk) + ' / share',
+                  maxGain: fmt$(oa.atm.strike - oa.atm.putAsk) + ' max',
+                  color: '#ef4444',
+                  tip: `Long Put — buy the right to sell ${SYM} at ${fmt$(oa.atm.strike)} by expiry.\n\nBreakeven: Strike − Premium = ${fmt$(oa.atm.strike - oa.atm.putAsk)}\nMax Loss: ${fmt$(oa.atm.putAsk)} (premium paid)\nMax Gain: ${fmt$(oa.atm.strike - oa.atm.putAsk)} (stock → $0)\n\nBest when: strongly bearish or hedging a long stock position.`,
+                },
+                {
+                  name: 'Long Straddle', emoji: '↕️',
+                  cost: fmt$(oa.straddleCost),
+                  be: `${fmt$(oa.atm.strike - oa.straddleCost)} / ${fmt$(oa.atm.strike + oa.straddleCost)}`,
+                  bePct: `±${((oa.straddleCost / price) * 100).toFixed(1)}% move needed`,
+                  maxLoss: fmt$(oa.straddleCost) + ' / share',
+                  maxGain: 'Unlimited',
+                  color: '#818cf8',
+                  tip: `Long Straddle — buy both the ATM Call and ATM Put at ${fmt$(oa.atm.strike)}.\n\nBreakeven: Stock below ${fmt$(oa.atm.strike - oa.straddleCost)} OR above ${fmt$(oa.atm.strike + oa.straddleCost)}\nCost: ${fmt$(oa.straddleCost)} (call + put premium)\nMax Loss: ${fmt$(oa.straddleCost)} (stock stays at ${fmt$(oa.atm.strike)})\nMax Gain: Unlimited\n\nBest when: expecting a big move in either direction (earnings, news). Profits if IV expands.`,
+                },
+              ].map(s => (
+                <div key={s.name} className="bg-[#111] rounded-xl p-4 border border-[#1f1f1f]">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-lg">{s.emoji}</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-white font-semibold text-sm">{s.name}</span>
+                      <HelpBubble tip={s.tip} />
+                    </div>
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Cost</span>
+                      <span className="text-white font-mono">{s.cost}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Breakeven</span>
+                      <span className="font-mono font-semibold" style={{ color: s.color }}>{s.be}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Move needed</span>
+                      <span className="text-yellow-400 font-mono">{s.bePct}</span>
+                    </div>
+                    <div className="border-t border-[#2a2a2a] pt-2 flex justify-between">
+                      <span className="text-gray-500">Max loss</span>
+                      <span className="text-red-400 font-mono">{s.maxLoss}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Max gain</span>
+                      <span className="text-green-400 font-mono">{s.maxGain}</span>
+                    </div>
+                  </div>
+                </div>
               ))}
             </div>
           </div>
-          {options.length ? <OptionsTable data={options} /> : <Skeleton className="w-full h-60" />}
+
+          {/* ── Greeks Snapshot ── */}
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+            <div className="flex items-center gap-1.5 mb-4">
+              <h3 className="text-white font-semibold text-sm">ATM Greeks Snapshot</h3>
+              <HelpBubble tip="Greeks measure how an option's price changes relative to various market factors. These are ATM estimates for the selected expiry." />
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {[
+                {
+                  name: 'Delta', value: '≈ 0.50', color: '#818cf8',
+                  bar: 50, barColor: '#818cf8',
+                  tip: `Delta (Δ) — how much the option price moves per $1 move in the stock.\n\nATM options have Delta ≈ 0.50:\n• If the stock rises $1, the call gains ~$0.50\n• If the stock falls $1, the call loses ~$0.50\n\nDelta also approximates the probability the option expires in-the-money (50% for ATM).`,
+                },
+                {
+                  name: 'Gamma', value: `≈ ${oa.gammaRisk.toFixed(2)}`, color: '#fbbf24',
+                  bar: Math.min(oa.gammaRisk * 2000, 100), barColor: '#fbbf24',
+                  tip: `Gamma (Γ) — the rate of change of Delta per $1 move in the stock.\n\nHigh Gamma (ATM, near expiry) = Delta changes quickly — your position becomes very sensitive to price moves.\n\nGamma risk is highest when options are ATM and expiry is close. Market makers with short gamma must rapidly hedge as the stock moves.`,
+                },
+                {
+                  name: 'Theta', value: `−${fmt$(+(oa.atm.callAsk / dteDays * 1.3).toFixed(2))}/day`, color: '#ef4444',
+                  bar: Math.min((oa.atm.callAsk / dteDays / oa.atm.callAsk) * 500, 100), barColor: '#ef4444',
+                  tip: `Theta (Θ) — daily time decay. How much the option loses in value every day, all else equal.\n\nAs an option buyer, Theta works against you — your option loses value every day that passes without a move.\n\nTheta accelerates as expiry approaches (steepest in the last 2–3 weeks). Option sellers profit from Theta.`,
+                },
+                {
+                  name: 'Vega', value: `${fmt$(+(oa.atm.callAsk / (oa.atmIV / 100) * 0.01).toFixed(2))}/1% IV`, color: '#22c55e',
+                  bar: 55, barColor: '#22c55e',
+                  tip: `Vega (ν) — how much the option price changes per 1% change in Implied Volatility.\n\nIf IV rises 1%, a long option gains Vega dollars. If IV falls 1%, it loses Vega dollars.\n\nOption buyers are long Vega (want IV to rise). Sellers are short Vega. Vega is highest for ATM options and decreases near expiry.`,
+                },
+              ].map(g => (
+                <div key={g.name} className="bg-[#111] rounded-lg p-3">
+                  <div className="flex items-center gap-1 text-gray-500 text-xs mb-1">
+                    {g.name} <HelpBubble tip={g.tip} />
+                  </div>
+                  <div className="font-mono font-bold text-sm mb-2" style={{ color: g.color }}>{g.value}</div>
+                  <div className="h-1 bg-[#2a2a2a] rounded-full overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${g.bar}%`, background: g.barColor, opacity: 0.7 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          </>
+          )}
+
+          {/* ── Options Chain Table ── */}
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+            <h3 className="text-white font-semibold text-sm mb-4">Options Chain</h3>
+            {options.length ? <OptionsTable data={options} /> : <Skeleton className="w-full h-60" />}
+          </div>
+
         </div>
-      )}
+        );
+      })()}
+
+      {/* ── Return Distribution ────────────────────────────────────────────── */}
+      <div className={tab !== 'return dist' ? 'hidden' : ''}>
+        <RollingReturnProbability symbol={SYM} />
+      </div>
 
       {/* ── Performance ────────────────────────────────────────────────────── */}
-      {tab === 'performance' && <PerformanceTab symbol={SYM} />}
+      <div className={tab !== 'performance' ? 'hidden' : ''}>
+        <PerformanceTab symbol={SYM} />
+      </div>
 
-      {/* ── Strategies ─────────────────────────────────────────────────────── */}
-      {tab === 'strategies' && <StrategiesTab symbol={SYM} />}
+      {/* ── Trade Ideas ────────────────────────────────────────────────────── */}
+      <div className={tab !== 'trade ideas' ? 'hidden' : ''}>
+        <StrategiesTab symbol={SYM} />
+      </div>
 
       {/* ── News ───────────────────────────────────────────────────────────── */}
       {tab === 'news' && (

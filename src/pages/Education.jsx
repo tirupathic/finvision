@@ -175,6 +175,12 @@ const BLOGS = [
 ];
 
 const BLOG_CATS  = ['All', 'Investing', 'Markets', 'Macro', 'Value Investing', 'Quant', 'Options', 'Tech/Business', 'Education'];
+
+const FREQ_COLOR = {
+  Daily:   'bg-green-500/15 text-green-400',
+  Weekly:  'bg-blue-500/15 text-blue-400',
+  Monthly: 'bg-purple-500/15 text-purple-400',
+};
 // ── Day Trading Resources ──────────────────────────────────────────────────────
 
 const DAY_TRADING = {

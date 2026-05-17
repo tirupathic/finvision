@@ -1,9 +1,10 @@
 import { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, TrendingDown, Activity, Globe, Zap, DollarSign, Landmark, ShieldCheck, BarChart2, Calendar, AlertCircle, Info } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Globe, Zap, DollarSign, Landmark, ShieldCheck, BarChart2, Calendar, AlertCircle, Info, ChevronLeft, ChevronRight } from 'lucide-react';
 import { SECTORS } from '../services/stockData';
 import { formatMarketCap, formatVolume } from '../services/yahooApi';
 import { useQuotes, useMarketNews } from '../hooks/useYahoo';
+import { ECONOMIC_EVENTS, CATEGORY_ICONS } from '../services/calendarData';
 import StockCard from '../components/StockCard';
 import NewsCard from '../components/NewsCard';
 
@@ -66,18 +67,6 @@ const INDEX_DETAIL = [
   { sym: 'IWM', name: 'Russell 2K',  label: 'Small Cap Blend',   color: '#f59e0b' },
 ];
 
-const ECO_CALENDAR = [
-  { date: 'May 6',   day: 'Wed', name: 'FOMC Rate Decision',          impact: 'High',   est: '4.25–4.50%',  prev: '4.25–4.50%', note: 'Fed expected to hold; watch for hawkish/dovish tone shift' },
-  { date: 'May 7',   day: 'Thu', name: 'Initial Jobless Claims',      impact: 'Medium', est: '215K',        prev: '220K',       note: 'Leading indicator of labor market health' },
-  { date: 'May 8',   day: 'Fri', name: 'Nonfarm Payrolls (Apr)',      impact: 'High',   est: '+178K',       prev: '+228K',      note: 'Biggest monthly market mover — watch unemployment rate' },
-  { date: 'May 12',  day: 'Tue', name: 'CPI Inflation (Apr)',         impact: 'High',   est: '+0.3% MoM',   prev: '+0.2% MoM',  note: 'Core CPI drives Fed expectations and bond yields' },
-  { date: 'May 13',  day: 'Wed', name: 'PPI Producer Prices (Apr)',   impact: 'Medium', est: '+0.2% MoM',   prev: '+0.0% MoM',  note: 'Leading inflation indicator; upstream cost pressures' },
-  { date: 'May 14',  day: 'Thu', name: 'Retail Sales (Apr)',          impact: 'High',   est: '+0.4% MoM',   prev: '+1.4% MoM',  note: 'Consumer spending drives ~70% of US GDP' },
-  { date: 'May 15',  day: 'Fri', name: 'Michigan Consumer Sentiment', impact: 'Medium', est: '52.8',        prev: '52.2',       note: 'Consumer confidence and inflation expectations survey' },
-  { date: 'May 28',  day: 'Thu', name: 'GDP Q1 Second Estimate',      impact: 'High',   est: '-0.2%',       prev: '-0.3%',      note: 'Revision to Q1 advance estimate; tariff impact visible' },
-  { date: 'Jun 5',   day: 'Thu', name: 'Nonfarm Payrolls (May)',      impact: 'High',   est: '+165K',       prev: '+178K',      note: 'Monthly jobs data; key input for June FOMC decision' },
-  { date: 'Jun 11',  day: 'Wed', name: 'FOMC Rate Decision',          impact: 'High',   est: '4.25–4.50%',  prev: '4.25–4.50%', note: 'Markets pricing ~40% chance of a 25bps cut here' },
-];
 
 function SectorCard({ sector }) {
   const up        = sector.change >= 0;
@@ -129,9 +118,111 @@ function TableSkeleton({ rows, cols }) {
   ));
 }
 
+function getMonthBounds(offset = 0) {
+  const now   = new Date();
+  const year  = now.getFullYear();
+  const month = now.getMonth() + offset;
+  const first = new Date(year, month, 1);
+  const last  = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+  const pad   = n => String(n).padStart(2, '0');
+  const start = `${first.getFullYear()}-${pad(first.getMonth() + 1)}-01`;
+  const end   = `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`;
+  const label = first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  return { start, end, label };
+}
+
+function EconomicCalendarWidget({ calOffset, setCalOffset, expandedEvent, setExpandedEvent }) {
+  const { start, end, label } = useMemo(() => getMonthBounds(calOffset), [calOffset]);
+
+  const events = useMemo(() =>
+    ECONOMIC_EVENTS
+      .filter(e => e.date >= start && e.date <= end)
+      .sort((a, b) => a.date === b.date ? a.time.localeCompare(b.time) : a.date.localeCompare(b.date)),
+    [start, end]
+  );
+
+  return (
+    <div className="lg:col-span-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Calendar size={15} className="text-indigo-400" />
+          <h2 className="text-white font-semibold">Economic Calendar</h2>
+          <span className="text-gray-600 text-xs">· {label}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={() => { setCalOffset(o => o - 1); setExpandedEvent(null); }}
+            className="p-1 text-gray-500 hover:text-white hover:bg-white/5 rounded transition-colors">
+            <ChevronLeft size={14} />
+          </button>
+          <button onClick={() => { setCalOffset(0); setExpandedEvent(null); }}
+            className="px-2 py-0.5 text-[10px] text-gray-500 hover:text-white hover:bg-white/5 rounded transition-colors">
+            Today
+          </button>
+          <button onClick={() => { setCalOffset(o => o + 1); setExpandedEvent(null); }}
+            className="p-1 text-gray-500 hover:text-white hover:bg-white/5 rounded transition-colors">
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      </div>
+
+      {events.length === 0 ? (
+        <p className="text-gray-600 text-sm text-center py-8">No events data for {label}</p>
+      ) : (
+        <div className="space-y-0.5 max-h-[420px] overflow-y-auto pr-1">
+          {events.map((ev, i) => {
+            const impactColor = ev.importance === 'High' ? '#ef4444' : ev.importance === 'Medium' ? '#f59e0b' : '#6b7280';
+            const isExpanded  = expandedEvent === i;
+            const d           = new Date(ev.date + 'T12:00:00');
+            const dateLabel   = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const dayLabel    = d.toLocaleDateString('en-US', { weekday: 'short' });
+            const now         = new Date();
+            const todayStr    = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+            const isPast      = ev.date < todayStr;
+            return (
+              <div key={i}>
+                <button onClick={() => setExpandedEvent(isExpanded ? null : i)}
+                  className={`w-full flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-white/5 transition-colors text-left ${isPast ? 'opacity-50' : ''}`}>
+                  <div className="w-14 shrink-0 text-center">
+                    <p className="text-white text-xs font-bold">{dateLabel}</p>
+                    <p className="text-gray-600 text-[10px]">{dayLabel}</p>
+                  </div>
+                  <span className="text-base shrink-0">{CATEGORY_ICONS[ev.category] || '📌'}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-gray-200 text-sm font-medium truncate">{ev.name}</p>
+                    <p className="text-gray-600 text-[10px]">{ev.time}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {ev.forecast != null && (
+                      <div className="text-right hidden sm:block">
+                        <p className="text-[10px] text-gray-600">Est</p>
+                        <p className="text-xs font-mono text-gray-300">{ev.forecast}</p>
+                      </div>
+                    )}
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded"
+                      style={{ color: impactColor, background: `${impactColor}18` }}>
+                      {ev.importance}
+                    </span>
+                  </div>
+                </button>
+                {isExpanded && ev.previous != null && (
+                  <div className="ml-[68px] mr-3 mb-1 px-3 py-1.5 bg-[#111] rounded-lg border border-[#2a2a2a] flex items-center gap-4">
+                    <span className="text-[10px] text-gray-600 uppercase tracking-wider">Previous</span>
+                    <span className="text-xs font-mono text-gray-400">{ev.previous}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Markets() {
-  const [showLosers, setShowLosers] = useState(false);
+  const [showLosers,    setShowLosers]    = useState(false);
   const [expandedEvent, setExpandedEvent] = useState(null);
+  const [calOffset,     setCalOffset]     = useState(0);
 
   const { data: globalQuotes = [] }                          = useQuotes(GLOBAL_SYMBOLS,  { refreshMs: 30_000 });
   const { data: trendingQuotes = [], loading: trendingLoad } = useQuotes(TRENDING,         { refreshMs: 30_000 });
@@ -377,54 +468,13 @@ export default function Markets() {
 
       {/* Economic Calendar + Quick Gainers/Losers */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-        {/* Economic Calendar */}
-        <div className="lg:col-span-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <Calendar size={15} className="text-indigo-400" />
-            <h2 className="text-white font-semibold">Economic Calendar</h2>
-            <span className="text-gray-600 text-xs ml-1">· Upcoming key events</span>
-          </div>
-          <div className="space-y-1">
-            {ECO_CALENDAR.map((ev, i) => {
-              const impactColor = ev.impact === 'High' ? '#ef4444' : ev.impact === 'Medium' ? '#f59e0b' : '#6b7280';
-              const isExpanded  = expandedEvent === i;
-              return (
-                <div key={i}>
-                  <button onClick={() => setExpandedEvent(isExpanded ? null : i)}
-                    className="w-full flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-white/5 transition-colors text-left">
-                    <div className="w-14 shrink-0 text-center">
-                      <p className="text-white text-xs font-bold">{ev.date}</p>
-                      <p className="text-gray-600 text-[10px]">{ev.day}</p>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-gray-200 text-sm font-medium truncate">{ev.name}</p>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="text-right hidden sm:block">
-                        <p className="text-[10px] text-gray-600">Est</p>
-                        <p className="text-xs font-mono text-gray-300">{ev.est}</p>
-                      </div>
-                      <div className="text-right hidden sm:block">
-                        <p className="text-[10px] text-gray-600">Prev</p>
-                        <p className="text-xs font-mono text-gray-500">{ev.prev}</p>
-                      </div>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded"
-                        style={{ color: impactColor, background: `${impactColor}18` }}>
-                        {ev.impact}
-                      </span>
-                      <Info size={12} className={`transition-colors ${isExpanded ? 'text-indigo-400' : 'text-gray-600'}`} />
-                    </div>
-                  </button>
-                  {isExpanded && (
-                    <div className="ml-[68px] mr-3 mb-2 px-3 py-2 bg-[#111] rounded-lg border border-[#2a2a2a]">
-                      <p className="text-gray-400 text-xs leading-relaxed">{ev.note}</p>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        {/* Economic Calendar — dynamic current month */}
+        <EconomicCalendarWidget
+          calOffset={calOffset}
+          setCalOffset={setCalOffset}
+          expandedEvent={expandedEvent}
+          setExpandedEvent={setExpandedEvent}
+        />
 
         {/* Quick Gainers / Losers */}
         <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">

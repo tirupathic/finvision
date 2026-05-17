@@ -66,10 +66,28 @@ async function nasdaqFetch(path, ttlMs = 15_000) {
 
 // ─── Asset class routing ──────────────────────────────────────────────────────
 const ETF_SET    = new Set([
-  'SPY','QQQ','DIA','IWM','GLD','USO','XLF','XLK','XLE','XLV','VTI','VOO','AGG','TLT','HYG','ARKK',
+  // Broad market
+  'SPY','QQQ','DIA','IWM','VTI','VOO','ARKK',
+  // Sector
+  'XLF','XLK','XLE','XLV','XLY','XLP','XLI','XLB','XLU','XLRE','XLC',
+  // Commodity
+  'GLD','SLV','IAU','USO','UNG','PDBC','DBC',
+  // Bond
+  'AGG','TLT','HYG',
+  // Leveraged bull
   'TQQQ','UPRO','SPXL','TECL','UDOW','TNA','SOXL','FNGU','FAS','LABU','NAIL','BULZ',
+  // Leveraged bear
   'SQQQ','SPXU','SPXS','TECS','SDOW','TZA','SOXS','FNGD','FAZ','LABD',
+  // Volatility
   'UVXY','SVXY',
+  // International
+  'EFA','EEM','VEU','VWO','IEFA','VGK','EWJ','EWZ','FXI','IEMG',
+  'INDA','MCHI','KWEB','EWY','EWA','EWT',
+  // Crypto ETFs
+  'IBIT','FBTC','GBTC','BITB','BITO','ETHA',
+  // Income / dividend ETFs
+  'JEPI','JEPQ','SCHD','VYM','HDV','QYLD','BND','SGOV',
+  // MSTR is a stock (not ETF) — intentionally excluded so assetclass=stocks is used
 ]);
 const CRYPTO_SET = new Set(['BTC-USD','ETH-USD','BNB-USD','SOL-USD','XRP-USD','DOGE-USD','ADA-USD']);
 
@@ -192,65 +210,131 @@ function nasdaqChartToYF(raw, sym, ac = 'stocks') {
   };
 }
 
-function nasdaqSummaryToYF(raw) {
+// NASDAQ summary endpoint returns summaryData (not keyStats).
+// Format notes:
+//   MarketCap      → raw integer string with commas, e.g. "4,409,584,891,880"
+//   AverageVolume  → formatted number, e.g. "43,615,735"
+//   FiftTwoWeekHighLow → "$300.92/$193.46" (high/low, $ prefix, / separator)
+//   Yield          → "0.36%"
+//   AnnualizedDividend → "$1.08"
+//   OneYrTarget    → "$310.00"
+function nasdaqSummaryToYF(raw, yfExtra = {}) {
   const d  = raw?.data || {};
-  const ks = d.keyStats || {};
+  const sd = d.summaryData || {};
 
-  const price = parseNum(d.primaryData?.lastSalePrice);
-  const cap   = parseCap(ks.marketCap?.value);
-  const pe    = parseNum(ks.peRatio?.value)       || null;
-  const beta  = parseNum(ks.beta?.value)          || null;
-  const eps   = parseNum(ks.eps?.value)           || null;
-  const divY  = parseNum(ks.dividendYield?.value) || null;
+  function sdVal(key) { return String(sd[key]?.value ?? ''); }
 
-  const hwStr  = String(ks.fiftyTwoWeekHighLow?.value || '0 - 0');
-  const hwParts = hwStr.split(/\s*-\s*/);
-  const l52raw = hwParts[0];
-  const h52raw = hwParts[1];
+  // Market cap: raw integer string
+  const cap = parseCap(sdVal('MarketCap')) || parseNum(sdVal('MarketCap').replace(/,/g, ''));
+
+  // Avg volume: formatted integer
+  const avgVol = parseNum(sdVal('AverageVolume').replace(/,/g, ''));
+
+  // 52W range: "$300.92/$193.46" — first part is HIGH, second is LOW
+  const hw52    = sdVal('FiftTwoWeekHighLow').replace(/\$/g, '');
+  const hw52p   = hw52.split('/');
+  const h52     = parseNum(hw52p[0]) || null;
+  const l52     = parseNum(hw52p[1]) || null;
+
+  // Dividend / yield
+  const annDiv = parseNum(sdVal('AnnualizedDividend')) || null;
+  const yieldPct = parseFloat(sdVal('Yield').replace('%', '')) || null;
+  const divY = yieldPct != null ? yieldPct / 100 : null;
+
+  // Analyst price target
+  const target = parseNum(sdVal('OneYrTarget')) || null;
+
+  // Sector / industry from summaryData
+  const sector   = sdVal('Sector')   || d.assetClass || '';
+  const industry = sdVal('Industry') || '';
+
+  // Fundamentals from Yahoo Finance supplemental fetch (PE, EPS, Beta)
+  const price   = yfExtra.price    ?? null;
+  const pe      = yfExtra.pe       ?? null;
+  const fwdPE   = yfExtra.forwardPE ?? null;
+  const eps     = yfExtra.eps      ?? null;
+  const beta    = yfExtra.beta     ?? null;
 
   return {
     quoteSummary: {
       result: [{
         summaryDetail: {
-          marketCap:      { raw: cap  },
-          trailingPE:     { raw: pe   },
-          forwardPE:      { raw: null },
-          dividendYield:  { raw: divY ? divY / 100 : null },
-          beta:           { raw: beta },
-          fiftyTwoWeekHigh: { raw: parseNum(h52raw) },
-          fiftyTwoWeekLow:  { raw: parseNum(l52raw) },
-          averageVolume:    { raw: parseNum(ks.averagevolume?.value) },
-          regularMarketVolume: { raw: parseNum(d.primaryData?.volume) },
+          marketCap:           { raw: cap  || null },
+          trailingPE:          { raw: pe   },
+          forwardPE:           { raw: fwdPE },
+          dividendYield:       { raw: divY },
+          beta:                { raw: beta },
+          fiftyTwoWeekHigh:    { raw: h52  },
+          fiftyTwoWeekLow:     { raw: l52  },
+          averageVolume:       { raw: avgVol || null },
+          regularMarketVolume: { raw: null  },
+          priceTarget:         { raw: target },
         },
         defaultKeyStatistics: {
-          trailingEps:     { raw: eps  },
-          forwardEps:      { raw: null },
-          bookValue:       { raw: null },
-          priceToBook:     { raw: null },
+          trailingEps:       { raw: eps  },
+          forwardEps:        { raw: null },
+          bookValue:         { raw: null },
+          priceToBook:       { raw: null },
           sharesOutstanding: { raw: cap && price ? Math.round(cap / price) : null },
         },
         assetProfile: {
           longBusinessSummary: '',
-          sector:   d.stockType || '',
-          industry: '',
-          website:  '',
+          sector,
+          industry,
+          website:          '',
           fullTimeEmployees: null,
         },
         financialData: {
-          currentPrice:    { raw: price },
-          revenueGrowth:   { raw: null },
-          grossMargins:    { raw: null },
-          operatingMargins:{ raw: null },
-          profitMargins:   { raw: null },
-          returnOnEquity:  { raw: null },
-          totalDebt:       { raw: null },
-          totalRevenue:    { raw: null },
-          earningsGrowth:  { raw: null },
+          currentPrice:     { raw: price },
+          revenueGrowth:    { raw: null },
+          grossMargins:     { raw: null },
+          operatingMargins: { raw: null },
+          profitMargins:    { raw: null },
+          returnOnEquity:   { raw: null },
+          totalDebt:        { raw: null },
+          totalRevenue:     { raw: null },
+          earningsGrowth:   { raw: null },
+          targetMeanPrice:  { raw: target },
         },
       }],
       error: null,
     },
   };
+}
+
+// Fetch PE, EPS, Beta from Yahoo Finance v8 chart meta (best-effort; returns {} on failure).
+async function fetchYFFundamentals(sym) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d`;
+  const cached = cacheRead(url);
+  try {
+    let json;
+    if (cached?.fresh) {
+      json = JSON.parse(cached.data);
+    } else {
+      const r = await rawFetch(url, YF_HDR);
+      if (r.status >= 400) throw new Error(`YF HTTP ${r.status}`);
+      cacheWrite(url, r.data, 300_000);
+      json = JSON.parse(r.data);
+    }
+    const meta = json?.chart?.result?.[0]?.meta;
+    if (!meta) return {};
+    return {
+      price:     meta.regularMarketPrice     ?? null,
+      pe:        meta.trailingPE             ?? null,
+      forwardPE: meta.forwardPE              ?? null,
+      eps:       meta.trailingEps            ?? null,
+      beta:      meta.beta ?? meta.beta3Year ?? null,
+    };
+  } catch (e) {
+    console.warn('[YF Fundamentals]', sym, e.message);
+    if (cached) {
+      try {
+        const meta = JSON.parse(cached.data)?.chart?.result?.[0]?.meta;
+        if (meta) return { price: meta.regularMarketPrice ?? null, pe: meta.trailingPE ?? null, eps: meta.trailingEps ?? null, beta: meta.beta ?? null };
+      } catch {}
+    }
+    return {};
+  }
 }
 
 // NASDAQ income-statement → Yahoo Finance earnings format
@@ -411,18 +495,83 @@ function cryptoChart(sym, range) {
   };
 }
 
+// ─── Market index quotes (VIX, Treasury yields) via Yahoo Finance v8 ──────────
+const INDEX_NAMES = {
+  '^VIX':  'CBOE Volatility Index',
+  '^IRX':  '13-Week Treasury Bill',
+  '^FVX':  '5-Year Treasury Yield',
+  '^TNX':  '10-Year Treasury Yield',
+  '^TYX':  '30-Year Treasury Yield',
+  '^GSPC': 'S&P 500',
+  '^DJI':  'Dow Jones Industrial',
+  '^IXIC': 'NASDAQ Composite',
+  '^RUT':  'Russell 2000',
+};
+
+const YF_HDR = {
+  'User-Agent': NASDAQ_HDR['User-Agent'],
+  'Accept': 'application/json',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+
+async function fetchIndexQuote(sym) {
+  const encoded = encodeURIComponent(sym);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=5d`;
+
+  const cached = cacheRead(url);
+  if (cached?.fresh) return JSON.parse(cached.data);
+
+  try {
+    const r = await rawFetch(url, YF_HDR);
+    if (r.status >= 400) throw new Error(`YF HTTP ${r.status}`);
+
+    const json = JSON.parse(r.data);
+    const meta = json?.chart?.result?.[0]?.meta;
+    if (!meta) throw new Error('No meta');
+
+    const price     = meta.regularMarketPrice || 0;
+    const prevClose = meta.chartPreviousClose || meta.previousClose || price;
+    const change    = +(price - prevClose).toFixed(4);
+    const pct       = prevClose ? +((change / prevClose) * 100).toFixed(4) : 0;
+
+    const quote = {
+      symbol: sym,
+      shortName: INDEX_NAMES[sym] || meta.shortName || sym,
+      regularMarketPrice:         price,
+      regularMarketChange:        change,
+      regularMarketChangePercent: pct,
+      regularMarketVolume:        meta.regularMarketVolume || 0,
+      regularMarketDayHigh:       meta.regularMarketDayHigh || price,
+      regularMarketDayLow:        meta.regularMarketDayLow  || price,
+      regularMarketOpen:          meta.regularMarketOpen    || prevClose,
+      regularMarketPreviousClose: prevClose,
+      marketCap: 0, trailingPE: null,
+      fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || 0,
+      fiftyTwoWeekLow:  meta.fiftyTwoWeekLow  || 0,
+      fullExchangeName: 'Index',
+    };
+    cacheWrite(url, JSON.stringify(quote), 60_000);
+    return quote;
+  } catch (err) {
+    if (cached) return JSON.parse(cached.data);
+    console.warn('[YF Index] Fetch failed:', sym, err.message);
+    return null;
+  }
+}
+
 // ─── Bulk quotes (parallel NASDAQ calls) ─────────────────────────────────────
 async function fetchBulkQuotes(symbols) {
   const results = await Promise.allSettled(
     symbols.map(async sym => {
       if (CRYPTO_SET.has(sym)) return cryptoQuote(sym);
+      if (sym.startsWith('^'))  return fetchIndexQuote(sym);
       const ac  = assetClass(sym);
       const raw = await nasdaqFetch(`/api/quote/${encodeURIComponent(sym)}/info?assetclass=${ac}`, 15_000);
       return nasdaqInfoToQuote(raw, sym);
     })
   );
   const result = results.flatMap((r, i) => {
-    if (r.status === 'fulfilled') return [r.value];
+    if (r.status === 'fulfilled' && r.value) return [r.value];
     console.warn('[NASDAQ] Quote failed:', symbols[i], r.reason?.message);
     return [];
   });
@@ -528,8 +677,11 @@ function nasdaqProxy() {
               }));
             }
             const ac  = assetClass(sym);
-            const raw = await nasdaqFetch(`/api/quote/${encodeURIComponent(sym)}/summary?assetclass=${ac}`, 300_000);
-            return res.end(JSON.stringify(nasdaqSummaryToYF(raw)));
+            const [raw, yfExtra] = await Promise.all([
+              nasdaqFetch(`/api/quote/${encodeURIComponent(sym)}/summary?assetclass=${ac}`, 300_000),
+              fetchYFFundamentals(sym),
+            ]);
+            return res.end(JSON.stringify(nasdaqSummaryToYF(raw, yfExtra)));
           }
 
           // ── Earnings ───────────────────────────────────────────────────────

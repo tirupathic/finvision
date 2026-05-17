@@ -13,8 +13,9 @@ const CATEGORIES = [
   { id: 'commodity',     label: 'Commodities' },
   { id: 'international', label: 'International' },
   { id: 'crypto',        label: 'Crypto ETFs' },
-  { id: 'leveraged',     label: 'Leveraged ETFs' },
 ];
+
+const LEVERAGED_CATS = new Set(['long', 'short']);
 
 const CATEGORY_MAP = {
   SPY:  'broad',  QQQ:  'broad',  DIA:  'broad',  IWM: 'broad',
@@ -57,7 +58,8 @@ function Skeleton({ className = '' }) {
 }
 
 function ETFCard({ sym, info, q, loading }) {
-  const up = q ? q.pct >= 0 : null;
+  const hasPrice = q?.price > 0;
+  const up = hasPrice ? q.pct >= 0 : null;
   const isShort = CATEGORY_MAP[sym] === 'short';
   return (
     <Link to={`/stock/${sym}`}
@@ -75,7 +77,7 @@ function ETFCard({ sym, info, q, loading }) {
             <p className="text-gray-500 text-xs truncate max-w-[160px]">{info.issuer}</p>
           </div>
         </div>
-        {q ? (
+        {hasPrice ? (
           <div className="text-right">
             <p className="text-white font-mono font-bold">{fmt$(q.price)}</p>
             <p className={`text-xs font-mono flex items-center gap-0.5 justify-end ${colorClass(q.pct)}`}>
@@ -88,7 +90,9 @@ function ETFCard({ sym, info, q, loading }) {
             <Skeleton className="w-16 h-4" />
             <Skeleton className="w-12 h-3" />
           </div>
-        ) : null}
+        ) : (
+          <span className="text-gray-600 text-xs font-mono">—</span>
+        )}
       </div>
 
       <div className="flex items-center gap-2 mb-2">
@@ -133,7 +137,7 @@ function ETFCard({ sym, info, q, loading }) {
 }
 
 export default function ETFs() {
-  const [category, setCategory] = useState('all');
+  const [category, setCategory] = useState('broad');
 
   const { data: quotes = [], loading } = useQuotes(ALL_SYMBOLS, { refreshMs: 30_000 });
 
@@ -143,21 +147,11 @@ export default function ETFs() {
   );
 
   const filtered = useMemo(() => {
-    let syms;
-    if (category === 'all') {
-      syms = ALL_SYMBOLS;
-    } else if (category === 'leveraged') {
-      syms = ALL_SYMBOLS.filter(s => CATEGORY_MAP[s] === 'long' || CATEGORY_MAP[s] === 'short');
-    } else {
-      syms = ALL_SYMBOLS.filter(s => CATEGORY_MAP[s] === category);
-    }
+    const syms = category === 'all'
+      ? ALL_SYMBOLS.filter(s => !LEVERAGED_CATS.has(CATEGORY_MAP[s]))
+      : ALL_SYMBOLS.filter(s => CATEGORY_MAP[s] === category);
     return syms.map(sym => ({ sym, info: ETF_INFO[sym], q: quoteMap[sym] }));
   }, [category, quoteMap]);
-
-  const longItems  = useMemo(() => filtered.filter(({ sym }) => CATEGORY_MAP[sym] === 'long'),  [filtered]);
-  const shortItems = useMemo(() => filtered.filter(({ sym }) => CATEGORY_MAP[sym] === 'short'), [filtered]);
-  const isAllLeveraged = category === 'all';
-  const isLeveraged    = category === 'leveraged';
 
   return (
     <div className="max-w-screen-xl mx-auto px-4 py-6">
@@ -180,79 +174,11 @@ export default function ETFs() {
         ))}
       </div>
 
-      {/* Long sub-section — shown in 'leveraged' and 'all' views */}
-      {(isLeveraged || isAllLeveraged) && longItems.length > 0 && (
-        <div className="mb-8">
-          <h2 className="text-white font-semibold mb-4 flex items-center gap-2">
-            <TrendingUp size={16} className="text-green-400" />
-            Long / Leveraged ETFs
-            <span className="text-gray-500 text-xs font-normal">({longItems.length})</span>
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {longItems.map(({ sym, info, q }) => (
-              <ETFCard key={sym} sym={sym} info={info} q={q} loading={loading} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Short sub-section — shown in 'leveraged' and 'all' views */}
-      {(isLeveraged || isAllLeveraged) && shortItems.length > 0 && (
-        <div className="mb-8">
-          <h2 className="text-white font-semibold mb-4 flex items-center gap-2">
-            <TrendingDown size={16} className="text-red-400" />
-            Short / Inverse ETFs
-            <span className="text-gray-500 text-xs font-normal">({shortItems.length})</span>
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {shortItems.map(({ sym, info, q }) => (
-              <ETFCard key={sym} sym={sym} info={info} q={q} loading={loading} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Regular grid — single-category views (broad, sector, bond, commodity, international) */}
-      {!isLeveraged && !isAllLeveraged && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map(({ sym, info, q }) => (
-            <ETFCard key={sym} sym={sym} info={info} q={q} loading={loading} />
-          ))}
-        </div>
-      )}
-
-      {/* Core + International ETFs when viewing 'all' */}
-      {isAllLeveraged && (() => {
-        const rest = filtered.filter(({ sym }) => CATEGORY_MAP[sym] !== 'long' && CATEGORY_MAP[sym] !== 'short');
-        const intl = rest.filter(({ sym }) => CATEGORY_MAP[sym] === 'international');
-        const core = rest.filter(({ sym }) => CATEGORY_MAP[sym] !== 'international');
-        return (
-          <>
-            {intl.length > 0 && (
-              <div className="mb-8">
-                <h2 className="text-white font-semibold mb-4 flex items-center gap-2">
-                  🌍 International ETFs
-                  <span className="text-gray-500 text-xs font-normal">({intl.length})</span>
-                </h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {intl.map(({ sym, info, q }) => <ETFCard key={sym} sym={sym} info={info} q={q} loading={loading} />)}
-                </div>
-              </div>
-            )}
-            {core.length > 0 && (
-              <div>
-                <h2 className="text-white font-semibold mb-4 flex items-center gap-2">
-                  Core ETFs
-                  <span className="text-gray-500 text-xs font-normal">({core.length})</span>
-                </h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {core.map(({ sym, info, q }) => <ETFCard key={sym} sym={sym} info={info} q={q} loading={loading} />)}
-                </div>
-              </div>
-            )}
-          </>
-        );
-      })()}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filtered.map(({ sym, info, q }) => (
+          <ETFCard key={sym} sym={sym} info={info} q={q} loading={loading} />
+        ))}
+      </div>
     </div>
   );
 }

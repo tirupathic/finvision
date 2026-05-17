@@ -1,12 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  fetchChart, fetchQuotes, fetchSummary, fetchEarnings, fetchSearch, fetchNews, fetchInstitutional,
-  fetchEarningsCalendar,
-} from '../services/dataProvider';
-import {
-  parseChart, parseQuotes, parseSummary, parseEarnings, parseSearchQuotes, parseNews, parseInstitutional,
-  parseEarningsCalendar,
-} from '../services/yahooApi';
+import provider from '../services/providers';
 
 // ─── In-memory cache (module-level, survives re-renders, cleared on tab close) ─
 
@@ -56,7 +49,6 @@ function useAsync(asyncFn, deps, options = {}) {
   const run = useCallback(async () => {
     if (!enabled) return;
 
-    // Serve from cache when available
     if (cacheKey) {
       const hit = memGet(cacheKey);
       if (hit !== null) {
@@ -90,10 +82,7 @@ function useAsync(asyncFn, deps, options = {}) {
 
 export function useChart(symbol, interval = '1d', range = '3mo', opts = {}) {
   return useAsync(
-    async () => {
-      if (!symbol) return null;
-      return parseChart(await fetchChart(symbol, interval, range));
-    },
+    () => symbol ? provider.chart(symbol, interval, range) : Promise.resolve(null),
     [symbol, interval, range],
     { ttl: 60_000, ...opts },
   );
@@ -104,10 +93,7 @@ export function useChart(symbol, interval = '1d', range = '3mo', opts = {}) {
 export function useQuotes(symbols, opts = {}) {
   const key = symbols.join(',');
   return useAsync(
-    async () => {
-      if (!symbols.length) return [];
-      return parseQuotes(await fetchQuotes(symbols));
-    },
+    () => symbols.length ? provider.quotes(symbols) : Promise.resolve([]),
     [key],
     { ttl: 15_000, ...opts },
   );
@@ -122,10 +108,7 @@ export function useQuote(symbol, opts = {}) {
 
 export function useSummary(symbol, opts = {}) {
   return useAsync(
-    async () => {
-      if (!symbol) return null;
-      return parseSummary(await fetchSummary(symbol));
-    },
+    () => symbol ? provider.summary(symbol) : Promise.resolve(null),
     [symbol],
     { ttl: 300_000, ...opts },
   );
@@ -135,10 +118,7 @@ export function useSummary(symbol, opts = {}) {
 
 export function useEarnings(symbol, opts = {}) {
   return useAsync(
-    async () => {
-      if (!symbol) return [];
-      return parseEarnings(await fetchEarnings(symbol));
-    },
+    () => symbol ? provider.earnings(symbol) : Promise.resolve([]),
     [symbol],
     { ttl: 300_000, ...opts },
   );
@@ -148,7 +128,7 @@ export function useEarnings(symbol, opts = {}) {
 
 export function useSearch(query, opts = {}) {
   return useAsync(
-    async () => parseSearchQuotes(await fetchSearch(query, 6, 0)),
+    () => provider.search(query, 6, 0),
     [query],
     { ttl: 30_000, ...opts, enabled: !!query && query.length >= 1 },
   );
@@ -158,10 +138,7 @@ export function useSearch(query, opts = {}) {
 
 export function useNews(symbol, newsCount = 8, opts = {}) {
   return useAsync(
-    async () => {
-      if (!symbol) return [];
-      return parseNews(await fetchNews(symbol, newsCount));
-    },
+    () => symbol ? provider.news(symbol, newsCount) : Promise.resolve([]),
     [symbol, newsCount],
     { ttl: 300_000, ...opts },
   );
@@ -169,10 +146,7 @@ export function useNews(symbol, newsCount = 8, opts = {}) {
 
 export function useInstitutional(symbol, opts = {}) {
   return useAsync(
-    async () => {
-      if (!symbol) return null;
-      return parseInstitutional(await fetchInstitutional(symbol));
-    },
+    () => symbol ? provider.institutional(symbol) : Promise.resolve(null),
     [symbol],
     { ttl: 3_600_000, ...opts },
   );
@@ -180,10 +154,7 @@ export function useInstitutional(symbol, opts = {}) {
 
 export function useEarningsCalendar(date, opts = {}) {
   return useAsync(
-    async () => {
-      if (!date) return [];
-      return parseEarningsCalendar(await fetchEarningsCalendar(date));
-    },
+    () => date ? provider.earningsCalendar(date) : Promise.resolve([]),
     [date],
     { ttl: 3_600_000, ...opts },
   );
@@ -191,7 +162,7 @@ export function useEarningsCalendar(date, opts = {}) {
 
 export function useMarketNews(opts = {}) {
   return useAsync(
-    async () => parseNews(await fetchNews('stock market', 12)),
+    () => provider.news('stock market', 12),
     [],
     { ttl: 300_000, ...opts },
   );

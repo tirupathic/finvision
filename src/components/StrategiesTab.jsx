@@ -1,789 +1,527 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import {
-  ComposedChart, Bar, Line, Cell,
-  XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
-} from 'recharts';
-import {
-  TrendingUp, Minus, BarChart2, Zap, RefreshCw,
-  Layers, Activity, Cpu, MessageCircle, TrendingDown, Newspaper, ExternalLink,
+  TrendingUp, TrendingDown, Minus, Zap, Target, ShieldAlert,
+  Activity, Layers, MessageCircle, ExternalLink, RefreshCw,
+  BarChart2, Cpu, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { useChart, useNews } from '../hooks/useYahoo';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Strategy definitions ─────────────────────────────────────────────────────
 
 const DAY_STRATEGIES = [
-  { id: 'ma',       label: 'MA Crossover',   subtitle: '50/200-day SMA',         icon: TrendingUp, risk: 'Medium', minDays: 200,
-    desc: 'Golden cross (50 > 200) = BUY; death cross = SELL. Classic trend filter.' },
-  { id: 'rsi',      label: 'RSI Reversion',  subtitle: 'RSI < 35 / > 65',        icon: RefreshCw,  risk: 'Medium', minDays: 16,
-    desc: 'Oversold (RSI<35) = BUY; overbought (RSI>65) = SELL. Fades extremes.' },
-  { id: 'momentum', label: 'Momentum',       subtitle: '20-day % change',         icon: Zap,        risk: 'High',   minDays: 21,
-    desc: '>5% gain = BUY; >5% loss = SELL. Rides existing price trends.' },
-  { id: 'mean',     label: 'Mean Reversion', subtitle: '30-day Z-score',          icon: Minus,      risk: 'Low',    minDays: 30,
-    desc: 'Z < -1.5 (cheap) = BUY; Z > 1.5 (expensive) = SELL.' },
-  { id: 'macd',     label: 'MACD',           subtitle: '12/26/9 EMA histogram',   icon: BarChart2,  risk: 'Medium', minDays: 35,
-    desc: 'Histogram turns positive = BUY; turns negative = SELL.' },
-  { id: 'ema',      label: 'EMA Crossover',  subtitle: 'EMA9/20 + EMA50 filter', icon: Activity,   risk: 'Low',    minDays: 50,
-    desc: 'EMA9 > EMA20 and price > EMA50 = BUY. Triple trend confirmation.' },
+  { id: 'ma',       label: 'MA Cross',    subtitle: '50/200 SMA',         icon: TrendingUp, risk: 'Medium', minDays: 200,
+    desc: 'Golden cross (50 > 200) = BUY; death cross = SELL.' },
+  { id: 'rsi',      label: 'RSI Rev.',    subtitle: 'RSI < 35 / > 65',    icon: RefreshCw,  risk: 'Medium', minDays: 16,
+    desc: 'Oversold (RSI<35) = BUY; overbought (RSI>65) = SELL.' },
+  { id: 'momentum', label: 'Momentum',   subtitle: '20D % change',        icon: Zap,        risk: 'High',   minDays: 21,
+    desc: '>5% gain = BUY; >5% loss = SELL. Rides price trends.' },
+  { id: 'mean',     label: 'Mean Rev.',  subtitle: '30D Z-score',         icon: Minus,      risk: 'Low',    minDays: 30,
+    desc: 'Z < -1.5 = BUY; Z > 1.5 = SELL. Fades extremes.' },
+  { id: 'macd',     label: 'MACD',       subtitle: '12/26/9 histogram',   icon: BarChart2,  risk: 'Medium', minDays: 35,
+    desc: 'Histogram turns positive = BUY; negative = SELL.' },
+  { id: 'ema',      label: 'EMA Cross',  subtitle: 'EMA9/20 + EMA50',     icon: Activity,   risk: 'Low',    minDays: 50,
+    desc: 'EMA9 > EMA20 and price > EMA50 = BUY.' },
 ];
 
 const OPTION_STRATEGIES = [
-  { id: 'long_call',   name: 'Long Call',       direction: 'bullish', ivPref: 'low',  riskColor: 'text-yellow-400',
-    risk: 'Limited (premium)', desc: 'Buy ATM call. Profit from upside with defined risk.' },
-  { id: 'bull_spread', name: 'Bull Call Spread', direction: 'bullish', ivPref: 'any', riskColor: 'text-green-400',
-    risk: 'Limited (debit)',   desc: 'Buy ATM call, sell 5% OTM call. Cheaper bullish bet.' },
-  { id: 'long_put',    name: 'Long Put',          direction: 'bearish', ivPref: 'low',  riskColor: 'text-yellow-400',
-    risk: 'Limited (premium)', desc: 'Buy ATM put. Profit from downside or hedge a long.' },
-  { id: 'bear_spread', name: 'Bear Put Spread',   direction: 'bearish', ivPref: 'any', riskColor: 'text-green-400',
-    risk: 'Limited (debit)',   desc: 'Buy ATM put, sell 5% OTM put. Cheaper bearish bet.' },
-  { id: 'straddle',    name: 'Long Straddle',     direction: 'neutral', ivPref: 'low',  riskColor: 'text-yellow-400',
-    risk: 'Limited (2× prem)', desc: 'Buy ATM call + put. Profits from any large move.' },
-  { id: 'iron_condor', name: 'Iron Condor',       direction: 'neutral', ivPref: 'high', riskColor: 'text-green-400',
-    risk: 'Limited (wings)',   desc: 'Sell ±5% strangles, buy ±10% wings. Earns in quiet markets.' },
+  { id: 'long_call',   name: 'Long Call',       direction: 'bullish', ivPref: 'low',  risk: 'Limited (premium)',
+    desc: 'Buy ATM call. Full upside with defined risk.' },
+  { id: 'bull_spread', name: 'Bull Call Spread', direction: 'bullish', ivPref: 'any', risk: 'Limited (debit)',
+    desc: 'Buy ATM call, sell 5% OTM call. Cheaper bullish bet.' },
+  { id: 'long_put',    name: 'Long Put',         direction: 'bearish', ivPref: 'low',  risk: 'Limited (premium)',
+    desc: 'Buy ATM put. Profit from downside or hedge a long.' },
+  { id: 'bear_spread', name: 'Bear Put Spread',  direction: 'bearish', ivPref: 'any', risk: 'Limited (debit)',
+    desc: 'Buy ATM put, sell 5% OTM put. Cheaper bearish bet.' },
+  { id: 'straddle',    name: 'Long Straddle',    direction: 'neutral', ivPref: 'low',  risk: 'Limited (2× prem)',
+    desc: 'Buy ATM call + put. Profits from any large move.' },
+  { id: 'iron_condor', name: 'Iron Condor',      direction: 'neutral', ivPref: 'high', risk: 'Limited (wings)',
+    desc: 'Sell ±5% strangles, buy ±10% wings. Earns in quiet markets.' },
 ];
 
 const EXPIRY_OPTIONS = [
-  { id: 'weekly',    label: 'Weekly',    dte: '5–7 DTE'     },
-  { id: 'biweekly',  label: '2 Weeks',   dte: '14 DTE'      },
-  { id: 'monthly',   label: 'Monthly',   dte: '21–30 DTE'   },
-  { id: 'quarterly', label: 'Quarterly', dte: '60–90 DTE'   },
-  { id: 'leaps',     label: 'LEAPS',     dte: '180–365 DTE' },
+  { id: 'weekly',    label: 'Weekly',    dte: '5–7 DTE'   },
+  { id: 'biweekly',  label: '2 Weeks',   dte: '14 DTE'    },
+  { id: 'monthly',   label: 'Monthly',   dte: '21–30 DTE' },
+  { id: 'quarterly', label: 'Quarterly', dte: '60–90 DTE' },
+  { id: 'leaps',     label: 'LEAPS',     dte: '180+ DTE'  },
 ];
 
-const OPT_ROLL_WINDOWS     = ['7D', '14D', '30D', '90D'];
-const OPT_ROLL_WINDOW_DAYS = { '7D': 7, '14D': 14, '30D': 30, '90D': 90 };
+const EXPIRY_SETUP = {
+  weekly:    { long_call: 'Needs sharp move immediately — theta burns fastest.', bull_spread: 'Sell at 5–7 DTE; rapid decay favors seller.', long_put: 'Needs sharp drop fast — theta is the enemy.', bear_spread: 'Sell at 5–7 DTE; IV crush accelerates profit.', straddle: 'Enter 1 day before catalyst. Needs move > premium paid.', iron_condor: 'Ideal — rapid theta decay; wide profit zone.' },
+  biweekly:  { long_call: 'Buy ATM at 14 DTE. Needs move within 2 weeks.', bull_spread: '14 DTE; theta accelerates, favoring sellers.', long_put: 'Buy ATM at 14 DTE. Needs catalyst within 2 weeks.', bear_spread: '14 DTE; good balance of premium and time.', straddle: 'Enter 1–2 days before catalyst; exit quickly after.', iron_condor: 'Sell ±5% at 14 DTE; theta accelerates toward expiry.' },
+  monthly:   { long_call: 'Buy ATM 21–30 DTE. Balanced theta vs time.', bull_spread: 'Buy ATM / sell 5% OTM call. Standard 21–30 DTE setup.', long_put: 'Buy ATM 21–30 DTE. Balanced theta vs time.', bear_spread: 'Buy ATM / sell 5% OTM put. Standard 21–30 DTE setup.', straddle: 'Enter 3–5 days before catalyst; exit 1–2 days after.', iron_condor: 'Sell ±5%, buy ±10% wings. Target 21–30 DTE entry.' },
+  quarterly: { long_call: 'Buy ATM 60–90 DTE. Ample time for thesis.', bull_spread: 'Wider spread at 60–90 DTE; lower theta on debit.', long_put: 'Buy ATM 60–90 DTE. Time on your side.', bear_spread: 'Wider spread; ride move without excessive drag.', straddle: 'Lower daily theta; buy 60 DTE and adjust if needed.', iron_condor: 'Use wider strikes to give the stock room to move.' },
+  leaps:     { long_call: 'Buy deep ITM or ATM 180–365 DTE. Acts as leveraged stock.', bull_spread: 'Wide vertical 180+ DTE; minimal theta.', long_put: 'Buy deep ITM or ATM 180–365 DTE. Long-term hedge.', bear_spread: 'Wide vertical 180+ DTE for sustained downtrend.', straddle: 'Expensive upfront; virtually no theta risk.', iron_condor: 'Less effective at LEAPS; needs strong range-bound conviction.' },
+};
 
-// ─── Day-trading signal helpers ───────────────────────────────────────────────
+// ─── Signal computation ───────────────────────────────────────────────────────
 
-function computeSignalFromCloses(strategyId, closes) {
+function computeSignal(id, closes) {
   const n = closes.length;
-  if (n < 2) return { signal: 'HOLD', strength: 0, metric: null, label: '' };
+  if (n < 2) return { signal: 'HOLD', strength: 0, label: '' };
   const last = closes[n - 1];
 
-  if (strategyId === 'ma') {
-    if (n < 200) return { signal: 'HOLD', strength: 0, metric: null, label: 'Need 200 days' };
-    const ma50  = closes.slice(-50).reduce((s, v) => s + v, 0) / 50;
+  if (id === 'ma') {
+    if (n < 200) return { signal: 'HOLD', strength: 0, label: 'Need 200 days' };
+    const ma50 = closes.slice(-50).reduce((s, v) => s + v, 0) / 50;
     const ma200 = closes.slice(-200).reduce((s, v) => s + v, 0) / 200;
-    const diff  = (ma50 - ma200) / ma200 * 100;
-    return {
-      signal:   ma50 > ma200 ? 'BUY' : ma50 < ma200 * 0.98 ? 'SELL' : 'HOLD',
-      strength: Math.min(Math.abs(diff) * 10, 100),
-      metric:   diff,
-      label:    `MA50/200 spread: ${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%`,
-    };
+    const diff = (ma50 - ma200) / ma200 * 100;
+    return { signal: ma50 > ma200 ? 'BUY' : ma50 < ma200 * 0.98 ? 'SELL' : 'HOLD', strength: Math.min(Math.abs(diff) * 10, 100), label: `MA50/200: ${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%` };
   }
-  if (strategyId === 'rsi') {
-    if (n < 16) return { signal: 'HOLD', strength: 0, metric: null, label: 'Need 16 days' };
+  if (id === 'rsi') {
+    if (n < 16) return { signal: 'HOLD', strength: 0, label: 'Need 16 days' };
     const changes = closes.slice(1).map((p, i) => p - closes[i]);
-    const recent  = changes.slice(-14);
-    const gains   = recent.filter(c => c > 0).reduce((s, c) => s + c, 0) / 14;
-    const losses  = recent.filter(c => c < 0).reduce((s, c) => s - c, 0) / 14;
-    const rsi     = losses === 0 ? 100 : 100 - 100 / (1 + gains / losses);
-    return {
-      signal:   rsi < 35 ? 'BUY' : rsi > 65 ? 'SELL' : 'HOLD',
-      strength: rsi < 35 ? Math.min((35 - rsi) / 35 * 100, 100) : rsi > 65 ? Math.min((rsi - 65) / 35 * 100, 100) : 50,
-      metric:   rsi,
-      label:    `RSI(14): ${rsi.toFixed(1)}`,
-    };
+    const r14 = changes.slice(-14);
+    const gains = r14.filter(c => c > 0).reduce((s, c) => s + c, 0) / 14;
+    const losses = r14.filter(c => c < 0).reduce((s, c) => s - c, 0) / 14;
+    const rsi = losses === 0 ? 100 : 100 - 100 / (1 + gains / losses);
+    return { signal: rsi < 35 ? 'BUY' : rsi > 65 ? 'SELL' : 'HOLD', strength: rsi < 35 ? Math.min((35 - rsi) / 35 * 100, 100) : rsi > 65 ? Math.min((rsi - 65) / 35 * 100, 100) : 50, label: `RSI(14): ${rsi.toFixed(1)}` };
   }
-  if (strategyId === 'momentum') {
-    if (n < 22) return { signal: 'HOLD', strength: 0, metric: null, label: 'Need 21 days' };
-    const base20 = closes[n - 21];
-    const mom    = (last - base20) / base20 * 100;
-    return {
-      signal:   mom > 5 ? 'BUY' : mom < -5 ? 'SELL' : 'HOLD',
-      strength: Math.min(Math.abs(mom) * 5, 100),
-      metric:   mom,
-      label:    `20D momentum: ${mom >= 0 ? '+' : ''}${mom.toFixed(2)}%`,
-    };
+  if (id === 'momentum') {
+    if (n < 22) return { signal: 'HOLD', strength: 0, label: 'Need 21 days' };
+    const mom = (last - closes[n - 21]) / closes[n - 21] * 100;
+    return { signal: mom > 5 ? 'BUY' : mom < -5 ? 'SELL' : 'HOLD', strength: Math.min(Math.abs(mom) * 5, 100), label: `20D mom: ${mom >= 0 ? '+' : ''}${mom.toFixed(2)}%` };
   }
-  if (strategyId === 'mean') {
-    if (n < 30) return { signal: 'HOLD', strength: 0, metric: null, label: 'Need 30 days' };
-    const slice = closes.slice(-30);
-    const mean  = slice.reduce((s, v) => s + v, 0) / 30;
-    const sd    = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / 29);
-    const z     = sd === 0 ? 0 : (last - mean) / sd;
-    return {
-      signal:   z < -1.5 ? 'BUY' : z > 1.5 ? 'SELL' : 'HOLD',
-      strength: Math.min(Math.abs(z) * 33.3, 100),
-      metric:   z,
-      label:    `Z-score(30): ${z.toFixed(2)}`,
-    };
+  if (id === 'mean') {
+    if (n < 30) return { signal: 'HOLD', strength: 0, label: 'Need 30 days' };
+    const sl = closes.slice(-30);
+    const mean = sl.reduce((s, v) => s + v, 0) / 30;
+    const sd = Math.sqrt(sl.reduce((s, v) => s + (v - mean) ** 2, 0) / 29);
+    const z = sd === 0 ? 0 : (last - mean) / sd;
+    return { signal: z < -1.5 ? 'BUY' : z > 1.5 ? 'SELL' : 'HOLD', strength: Math.min(Math.abs(z) * 33.3, 100), label: `Z-score(30): ${z.toFixed(2)}` };
   }
-  if (strategyId === 'macd') {
-    if (n < 35) return { signal: 'HOLD', strength: 0, metric: null, label: 'Need 35 days' };
+  if (id === 'macd') {
+    if (n < 35) return { signal: 'HOLD', strength: 0, label: 'Need 35 days' };
     const k12 = 2 / 13, k26 = 2 / 27, k9 = 2 / 10;
     let e12 = closes[0], e26 = closes[0];
     const macdArr = [];
-    for (let i = 1; i < n; i++) {
-      e12 = closes[i] * k12 + e12 * (1 - k12);
-      e26 = closes[i] * k26 + e26 * (1 - k26);
-      macdArr.push(e12 - e26);
-    }
+    for (let i = 1; i < n; i++) { e12 = closes[i] * k12 + e12 * (1 - k12); e26 = closes[i] * k26 + e26 * (1 - k26); macdArr.push(e12 - e26); }
     let sig = macdArr[0];
-    const histArr = [];
-    for (const m of macdArr) { sig = m * k9 + sig * (1 - k9); histArr.push(m - sig); }
-    const lh = histArr[histArr.length - 1];
-    const ph = histArr[histArr.length - 2] ?? 0;
-    return {
-      signal:   lh > 0 && ph <= 0 ? 'BUY' : lh < 0 && ph >= 0 ? 'SELL' : 'HOLD',
-      strength: Math.min(Math.abs(lh) * 1000, 100),
-      metric:   lh,
-      label:    `MACD hist: ${lh >= 0 ? '+' : ''}${lh.toFixed(4)}`,
-    };
+    const hist = [];
+    for (const m of macdArr) { sig = m * k9 + sig * (1 - k9); hist.push(m - sig); }
+    const lh = hist[hist.length - 1], ph = hist[hist.length - 2] ?? 0;
+    return { signal: lh > 0 && ph <= 0 ? 'BUY' : lh < 0 && ph >= 0 ? 'SELL' : 'HOLD', strength: Math.min(Math.abs(lh) * 1000, 100), label: `MACD hist: ${lh >= 0 ? '+' : ''}${lh.toFixed(4)}` };
   }
-  if (strategyId === 'ema') {
-    if (n < 50) return { signal: 'HOLD', strength: 0, metric: null, label: 'Need 50 days' };
+  if (id === 'ema') {
+    if (n < 50) return { signal: 'HOLD', strength: 0, label: 'Need 50 days' };
     const k9 = 2 / 10, k20 = 2 / 21, k50 = 2 / 51;
     let e9 = closes[0], e20 = closes[0], e50 = closes[0];
-    for (let i = 1; i < n; i++) {
-      e9  = closes[i] * k9  + e9  * (1 - k9);
-      e20 = closes[i] * k20 + e20 * (1 - k20);
-      e50 = closes[i] * k50 + e50 * (1 - k50);
-    }
+    for (let i = 1; i < n; i++) { e9 = closes[i] * k9 + e9 * (1 - k9); e20 = closes[i] * k20 + e20 * (1 - k20); e50 = closes[i] * k50 + e50 * (1 - k50); }
     const spread = (e9 - e20) / e20 * 100;
-    return {
-      signal:   e9 > e20 && last > e50 ? 'BUY' : e9 < e20 && last < e50 ? 'SELL' : 'HOLD',
-      strength: Math.min(Math.abs(spread) * 500, 100),
-      metric:   spread,
-      label:    `EMA9/20 spread: ${spread >= 0 ? '+' : ''}${spread.toFixed(3)}%`,
-    };
+    return { signal: e9 > e20 && last > e50 ? 'BUY' : e9 < e20 && last < e50 ? 'SELL' : 'HOLD', strength: Math.min(Math.abs(spread) * 500, 100), label: `EMA9/20 spread: ${spread >= 0 ? '+' : ''}${spread.toFixed(3)}%` };
   }
-  return { signal: 'HOLD', strength: 0, metric: null, label: '' };
+  return { signal: 'HOLD', strength: 0, label: '' };
 }
 
-// ─── Options helpers ──────────────────────────────────────────────────────────
+function computeATR(ohlcv, n = 14) {
+  if (ohlcv.length < n + 1) return 0;
+  let sum = 0;
+  for (let i = ohlcv.length - n; i < ohlcv.length; i++) {
+    const prev = ohlcv[i - 1]?.close ?? ohlcv[i].close;
+    const h = ohlcv[i].high ?? ohlcv[i].close, l = ohlcv[i].low ?? ohlcv[i].close;
+    sum += Math.max(h - l, Math.abs(h - prev), Math.abs(l - prev));
+  }
+  return sum / n;
+}
 
 function computeHV(ohlcv, n = 60) {
-  const slice = ohlcv.slice(-Math.min(n + 1, ohlcv.length));
-  if (slice.length < 5) return 0.3;
-  const rets = slice.slice(1).map((pt, i) => Math.log(pt.close / slice[i].close));
+  const sl = ohlcv.slice(-Math.min(n + 1, ohlcv.length));
+  if (sl.length < 5) return 0.3;
+  const rets = sl.slice(1).map((pt, i) => Math.log(pt.close / sl[i].close));
   const mean = rets.reduce((s, r) => s + r, 0) / rets.length;
-  const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / (rets.length - 1);
-  return Math.sqrt(variance * 252);
-}
-
-function normCDF(x) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const d = 0.3989423 * Math.exp(-x * x / 2);
-  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.7814779 + t * (-1.821256 + t * 1.3302744))));
-  return x > 0 ? 1 - p : p;
-}
-function bsCall(S, K, T, sigma, r = 0.05) {
-  if (T <= 0) return Math.max(0, S - K);
-  const sq = sigma * Math.sqrt(T);
-  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / sq;
-  return S * normCDF(d1) - K * Math.exp(-r * T) * normCDF(d1 - sq);
-}
-function bsPut(S, K, T, sigma, r = 0.05) {
-  if (T <= 0) return Math.max(0, K - S);
-  const sq = sigma * Math.sqrt(T);
-  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / sq;
-  return K * Math.exp(-r * T) * normCDF(-(d1 - sq)) - S * normCDF(-d1);
-}
-
-function computeOptStratRolling(ohlcv, strategyId, windowDays, hv) {
-  if (!ohlcv || ohlcv.length <= windowDays || hv <= 0) return [];
-  const T = windowDays / 252, r = 0.05;
-  const result = [];
-  for (let i = 0; i + windowDays < ohlcv.length; i++) {
-    const S0 = ohlcv[i].close, S1 = ohlcv[i + windowDays].close;
-    const stockRet = +((S1 - S0) / S0 * 100).toFixed(2);
-    let stratRet = 0;
-    if (strategyId === 'long_call') {
-      const prem = bsCall(S0, S0, T, hv, r);
-      stratRet = prem > 0.01 ? +((Math.max(0, S1 - S0) - prem) / prem * 100).toFixed(2) : 0;
-    } else if (strategyId === 'bull_spread') {
-      const K2 = S0 * 1.05, cost = bsCall(S0, S0, T, hv, r) - bsCall(S0, K2, T, hv, r);
-      stratRet = cost > 0.01 ? +((Math.max(0, Math.min(S1 - S0, K2 - S0)) - cost) / cost * 100).toFixed(2) : 0;
-    } else if (strategyId === 'long_put') {
-      const prem = bsPut(S0, S0, T, hv, r);
-      stratRet = prem > 0.01 ? +((Math.max(0, S0 - S1) - prem) / prem * 100).toFixed(2) : 0;
-    } else if (strategyId === 'bear_spread') {
-      const K1 = S0 * 0.95, cost = bsPut(S0, S0, T, hv, r) - bsPut(S0, K1, T, hv, r);
-      stratRet = cost > 0.01 ? +((Math.max(0, Math.min(S0 - S1, S0 - K1)) - cost) / cost * 100).toFixed(2) : 0;
-    } else if (strategyId === 'straddle') {
-      const cost = bsCall(S0, S0, T, hv, r) + bsPut(S0, S0, T, hv, r);
-      stratRet = cost > 0.01 ? +((Math.abs(S1 - S0) - cost) / cost * 100).toFixed(2) : 0;
-    } else if (strategyId === 'iron_condor') {
-      const Kpc = S0 * 0.95, Kpp = S0 * 0.90, Kcc = S0 * 1.05, Kcp = S0 * 1.10;
-      const credit = (bsPut(S0, Kpc, T, hv, r) - bsPut(S0, Kpp, T, hv, r))
-                   + (bsCall(S0, Kcc, T, hv, r) - bsCall(S0, Kcp, T, hv, r));
-      let pnl = credit;
-      if (S1 < Kpc) pnl -= Math.min(Kpc - S1, Kpc - Kpp);
-      if (S1 > Kcc) pnl -= Math.min(S1 - Kcc, Kcp - Kcc);
-      const maxLoss = S0 * 0.05 - credit;
-      stratRet = maxLoss > 0.01 ? +((pnl / maxLoss) * 100).toFixed(2) : 0;
-    }
-    result.push({ date: ohlcv[i + windowDays].date, stratRet, stockRet });
-  }
-  return result;
+  return Math.sqrt(rets.reduce((s, r) => s + (r - mean) ** 2, 0) / (rets.length - 1) * 252);
 }
 
 function suggestOptStrategies(trend, hvLevel, expiry) {
-  if (expiry === 'weekly') {
-    if (hvLevel === 'high') {
-      if (trend === 'bullish') return ['bull_spread', 'iron_condor'];
-      if (trend === 'bearish') return ['bear_spread', 'iron_condor'];
-      return ['iron_condor', 'bull_spread'];
-    }
-    if (trend === 'bullish') return ['bull_spread', 'straddle'];
-    if (trend === 'bearish') return ['bear_spread', 'straddle'];
-    return ['straddle', 'iron_condor'];
+  if (expiry === 'weekly' || expiry === 'biweekly') {
+    if (hvLevel === 'high') return trend === 'bullish' ? ['bull_spread', 'iron_condor'] : trend === 'bearish' ? ['bear_spread', 'iron_condor'] : ['iron_condor', 'bull_spread'];
+    return trend === 'bullish' ? ['bull_spread', 'straddle'] : trend === 'bearish' ? ['bear_spread', 'straddle'] : ['straddle', 'iron_condor'];
   }
-  if (expiry === 'biweekly') {
-    if (hvLevel === 'high') {
-      if (trend === 'bullish') return ['bull_spread', 'iron_condor'];
-      if (trend === 'bearish') return ['bear_spread', 'iron_condor'];
-      return ['iron_condor', 'bull_spread'];
-    }
-    if (trend === 'bullish') return ['bull_spread', 'long_call'];
-    if (trend === 'bearish') return ['bear_spread', 'long_put'];
-    return ['straddle', 'iron_condor'];
+  if (expiry === 'quarterly' || expiry === 'leaps') {
+    return trend === 'bullish' ? ['long_call', 'bull_spread'] : trend === 'bearish' ? ['long_put', 'bear_spread'] : ['straddle', 'iron_condor'];
   }
-  if (expiry === 'quarterly') {
-    if (trend === 'bullish') return hvLevel === 'high' ? ['bull_spread', 'long_call'] : ['long_call', 'bull_spread'];
-    if (trend === 'bearish') return hvLevel === 'high' ? ['bear_spread', 'long_put'] : ['long_put', 'bear_spread'];
-    return hvLevel === 'high' ? ['iron_condor', 'straddle'] : ['straddle', 'long_call'];
-  }
-  if (expiry === 'leaps') {
-    if (trend === 'bullish') return ['long_call', 'bull_spread'];
-    if (trend === 'bearish') return ['long_put', 'bear_spread'];
-    return ['straddle', 'long_call'];
-  }
-  // monthly (default)
-  if (trend === 'bullish') return hvLevel === 'low' ? ['long_call', 'bull_spread'] : ['bull_spread', 'long_call'];
-  if (trend === 'bearish') return hvLevel === 'low' ? ['long_put', 'bear_spread'] : ['bear_spread', 'long_put'];
-  return hvLevel === 'high' ? ['iron_condor', 'straddle'] : ['straddle', 'iron_condor'];
+  return trend === 'bullish' ? (hvLevel === 'low' ? ['long_call', 'bull_spread'] : ['bull_spread', 'long_call']) : trend === 'bearish' ? (hvLevel === 'low' ? ['long_put', 'bear_spread'] : ['bear_spread', 'long_put']) : (hvLevel === 'high' ? ['iron_condor', 'straddle'] : ['straddle', 'iron_condor']);
 }
 
-function getConditionRationale(trend, hvLevel, expiry) {
-  const trendStr  = trend === 'bullish' ? 'uptrend' : trend === 'bearish' ? 'downtrend' : 'sideways range';
-  const ivStr     = hvLevel === 'high' ? 'elevated IV' : hvLevel === 'medium' ? 'moderate IV' : 'low IV';
-  const expiryCtx = expiry === 'weekly'    ? 'Fast theta at weekly expiry amplifies credit spreads.'
-    : expiry === 'biweekly'  ? '2-week expiry balances fast theta with some directional runway.'
-    : expiry === 'quarterly' ? 'Longer runway reduces theta pressure on directional plays.'
-    : expiry === 'leaps'     ? 'LEAPS theta is minimal — buying premium is cost-effective.'
-    : 'Standard monthly expiry — balanced theta vs time-to-profit.';
-  if (trend === 'bullish' && hvLevel === 'high')
-    return `${trendStr.charAt(0).toUpperCase() + trendStr.slice(1)} with ${ivStr} — sell premium on pullbacks. ${expiryCtx}`;
-  if (trend === 'bullish' && hvLevel !== 'high')
-    return `${trendStr.charAt(0).toUpperCase() + trendStr.slice(1)} with ${ivStr} — cheap options favor directional buys. ${expiryCtx}`;
-  if (trend === 'bearish' && hvLevel === 'high')
-    return `${trendStr.charAt(0).toUpperCase() + trendStr.slice(1)} with ${ivStr} — premium selling on bounces works well. ${expiryCtx}`;
-  if (trend === 'bearish' && hvLevel !== 'high')
-    return `${trendStr.charAt(0).toUpperCase() + trendStr.slice(1)} with ${ivStr} — low option cost favors put purchases. ${expiryCtx}`;
-  if (hvLevel === 'high')
-    return `Range-bound with ${ivStr} — Iron Condor collects rich premium on both sides. ${expiryCtx}`;
-  return `Range-bound with ${ivStr} — straddle profits from any large move. ${expiryCtx}`;
-}
-
-const EXPIRY_SETUP = {
-  weekly: {
-    long_call:   'Needs a sharp move immediately — theta burns fastest at weekly expiry.',
-    bull_spread: "Sell the spread at 5–7 DTE. Rapid theta decay works in the seller's favor.",
-    long_put:    'Needs a sharp drop fast — theta is the biggest enemy here.',
-    bear_spread: 'Sell the spread at 5–7 DTE. Quick IV crush accelerates profit.',
-    straddle:    'Enter 1 day before a catalyst. Needs a move larger than combined premium paid.',
-    iron_condor: 'Ideal for weekly expiry — theta decays rapidly and the profit zone is wide.',
-  },
-  biweekly: {
-    long_call:   'Buy ATM call at 14 DTE. Short window — needs a move within 2 weeks.',
-    bull_spread: 'Sell the spread at 14 DTE. Theta starts accelerating, favoring sellers.',
-    long_put:    'Buy ATM put at 14 DTE. Requires a clear catalyst within 2 weeks.',
-    bear_spread: 'Sell the spread at 14 DTE. Good balance of premium and time.',
-    straddle:    'Enter 1–2 days before a catalyst with 14 DTE. Exit quickly after the move.',
-    iron_condor: 'Sell ±5% strikes at 14 DTE. Theta decay accelerates toward expiry.',
-  },
-  monthly: {
-    long_call:   'Buy ATM call 21–30 DTE. Balanced theta vs enough time to be right.',
-    bull_spread: 'Buy ATM / sell 5% OTM call. Standard 21–30 DTE setup.',
-    long_put:    'Buy ATM put 21–30 DTE. Balanced theta vs time for the move.',
-    bear_spread: 'Buy ATM / sell 5% OTM put. Standard 21–30 DTE setup.',
-    straddle:    'Enter 3–5 days before a catalyst. Exit within 1–2 days after the event.',
-    iron_condor: 'Sell ±5% strikes, buy ±10% wings. Target 21–30 DTE entry.',
-  },
-  quarterly: {
-    long_call:   'Buy ATM or slightly OTM call 60–90 DTE. Ample time for the thesis to play out.',
-    bull_spread: 'Wider spread works well at 60–90 DTE — lower theta pressure on the debit.',
-    long_put:    'Buy ATM or slightly OTM put 60–90 DTE. Time on your side.',
-    bear_spread: 'Wider spread at 60–90 DTE. Ride the move without excessive theta drag.',
-    straddle:    'Lower daily theta cost — buy 60 DTE and adjust strikes if needed.',
-    iron_condor: 'Use wider strikes at 60–90 DTE to give the stock room to move.',
-  },
-  leaps: {
-    long_call:   'Buy deep ITM or ATM call 180–365 DTE. Acts as leveraged long stock exposure.',
-    bull_spread: 'Wide vertical spread 180+ DTE. Minimal theta, maximum time to be right.',
-    long_put:    'Buy deep ITM or ATM put 180–365 DTE. Effective long-term hedge.',
-    bear_spread: 'Wide vertical spread 180+ DTE for a sustained downtrend thesis.',
-    straddle:    'Expensive upfront but virtually no theta risk. Good for macro uncertainty.',
-    iron_condor: 'Less effective at LEAPS — use only with very high range-bound conviction.',
-  },
-};
-
-// ─── Sentiment engine ─────────────────────────────────────────────────────────
-
-const BULLISH_RE = /\b(beat|beats|surges?|records?|upgrades?|growth|strong|rally|rallies|higher|profits?|gains?|exceeds?|outperforms?|bullish|breakout|momentum|launches?|partnerships?|acquisitions?|raises?|positive|upside|soars?|jumps?|rises?|boosts?|rebounds?|optimistic|expansion|record-high|all-time)\b/gi;
-const BEARISH_RE = /\b(miss|misses|drops?|declines?|falls?|downgrades?|losses?|weak|lower|negative|concerns?|risks?|bearish|warns?|warnings?|cuts?|layoffs?|lawsuits?|investigation|downside|pressure|recession|plunges?|slides?|tumbles?|crash|crashing|disappoints?|disappointing|shortfall|deficit|fears?|troubles?|struggles?|sell-off)\b/gi;
-
-function scoreHeadline(title) {
-  const bull = (title.match(BULLISH_RE) || []).length;
-  const bear = (title.match(BEARISH_RE) || []).length;
-  return { bull, bear, net: bull - bear };
-}
+const BULLISH_RE = /\b(beat|beats|surges?|upgrades?|growth|strong|rally|profits?|gains?|exceeds?|outperforms?|bullish|breakout|launches?|positive|upside|soars?|jumps?|rises?|boosts?|rebounds?|record-high)\b/gi;
+const BEARISH_RE = /\b(miss|misses|drops?|declines?|falls?|downgrades?|losses?|weak|lower|negative|concerns?|risks?|bearish|warns?|cuts?|layoffs?|lawsuit|downside|pressure|recession|plunges?|slides?|tumbles?|disappoints?|shortfall|fears?|sell-off)\b/gi;
 
 function analyzeSentiment(news) {
   if (!news.length) return null;
-  const scored = news.map(n => ({ ...scoreHeadline(n.title), title: n.title, source: n.source, time: n.time, url: n.url }));
+  const scored = news.map(n => { const bull = (n.title.match(BULLISH_RE) || []).length; const bear = (n.title.match(BEARISH_RE) || []).length; return { ...n, net: bull - bear }; });
   const totalNet = scored.reduce((s, v) => s + v.net, 0);
-  const maxPossible = Math.max(scored.length * 2, 1);
-  const score   = Math.min(100, Math.max(0, Math.round(50 + (totalNet / maxPossible) * 50)));
-  const label   = score >= 62 ? 'Bullish' : score <= 38 ? 'Bearish' : 'Neutral';
+  const score = Math.min(100, Math.max(0, Math.round(50 + (totalNet / Math.max(scored.length * 2, 1)) * 50)));
+  const label = score >= 62 ? 'Bullish' : score <= 38 ? 'Bearish' : 'Neutral';
   const strength = score >= 75 || score <= 25 ? 'Strong' : score >= 62 || score <= 38 ? 'Moderate' : 'Weak';
-  return {
-    score, label, strength,
-    bullishCount: scored.filter(s => s.net > 0).length,
-    bearishCount: scored.filter(s => s.net < 0).length,
-    neutralCount: scored.filter(s => s.net === 0).length,
-    topBullish:   scored.filter(s => s.net > 0).slice(0, 3),
-    topBearish:   scored.filter(s => s.net < 0).slice(0, 3),
-    total:        scored.length,
-  };
-}
-
-function getSentimentStrategies(sentLabel, hvLevel) {
-  if (sentLabel === 'Bullish')
-    return hvLevel === 'high' ? ['bull_spread', 'iron_condor'] : ['long_call', 'bull_spread'];
-  if (sentLabel === 'Bearish')
-    return hvLevel === 'high' ? ['bear_spread', 'iron_condor'] : ['long_put', 'bear_spread'];
-  return hvLevel === 'high' ? ['iron_condor', 'straddle'] : ['straddle', 'iron_condor'];
-}
-
-// ─── Rolling chart ────────────────────────────────────────────────────────────
-
-function RollingChart({ data, loading, emptyMsg }) {
-  const Tip = ({ active, payload }) => {
-    if (!active || !payload?.length) return null;
-    const d = payload[0]?.payload;
-    return (
-      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs font-mono space-y-0.5">
-        <p className="text-gray-400">{d?.date}</p>
-        {payload.map(p => {
-          const v = p.value ?? 0;
-          const color = p.dataKey === 'stockRet' ? '#9ca3af' : v >= 0 ? '#6366f1' : '#ef4444';
-          return <p key={p.dataKey} style={{ color }}>{p.name}: {v >= 0 ? '+' : ''}{v.toFixed(2)}%</p>;
-        })}
-      </div>
-    );
-  };
-
-  if (loading) return <div className="bg-[#111] rounded-lg animate-pulse h-44" />;
-  if (!data.length) return <p className="text-gray-600 text-sm text-center py-8">{emptyMsg}</p>;
-
-  return (
-    <ResponsiveContainer width="100%" height={180}>
-      <ComposedChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
-        <XAxis dataKey="date" hide />
-        <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} width={44}
-          tickFormatter={v => `${v >= 0 ? '+' : ''}${v.toFixed(0)}%`} />
-        <ReferenceLine y={0} stroke="#3a3a3a" />
-        <Tooltip content={<Tip />} />
-        <Bar dataKey="stratRet" name="Strategy" isAnimationActive={false} radius={[2, 2, 0, 0]}>
-          {data.map((e, i) => <Cell key={i} fill={e.stratRet >= 0 ? '#6366f1' : '#ef4444'} fillOpacity={0.85} />)}
-        </Bar>
-        <Line type="monotone" dataKey="stockRet" name="Stock" stroke="#9ca3af" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
+  return { score, label, strength, bullishCount: scored.filter(s => s.net > 0).length, bearishCount: scored.filter(s => s.net < 0).length, neutralCount: scored.filter(s => s.net === 0).length, top: scored.filter(s => s.net !== 0).slice(0, 4), total: scored.length };
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function SignalBadge({ signal }) {
-  const styles = {
-    BUY:  'bg-green-500/15 text-green-400 border border-green-500/20',
-    SELL: 'bg-red-500/15   text-red-400   border border-red-500/20',
-    HOLD: 'bg-gray-500/15  text-gray-400  border border-gray-500/20',
-  };
-  return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${styles[signal] ?? styles.HOLD}`}>
-      {signal}
-    </span>
-  );
-}
+const SIG_STYLE = {
+  BUY:  { badge: 'bg-green-500/15 text-green-400 border-green-500/30',  ring: 'border-green-500/40 bg-green-500/5',  dot: 'bg-green-400' },
+  SELL: { badge: 'bg-red-500/15   text-red-400   border-red-500/30',    ring: 'border-red-500/40   bg-red-500/5',    dot: 'bg-red-400'   },
+  HOLD: { badge: 'bg-gray-700/30  text-gray-500  border-gray-700/40',   ring: 'border-[#2a2a2a]    bg-[#111]',       dot: 'bg-gray-600'  },
+};
 
-function StrengthBar({ value }) {
-  const color = value >= 70 ? '#6366f1' : value >= 40 ? '#f59e0b' : '#6b7280';
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className="flex-1 bg-[#2a2a2a] rounded-full h-1" style={{ maxWidth: 60 }}>
-        <div className="h-1 rounded-full" style={{ width: `${value}%`, background: color }} />
-      </div>
-      <span className="text-gray-500 text-[10px] font-mono w-8 text-right">{value.toFixed(0)}%</span>
-    </div>
-  );
-}
-
-function DayStratCard({ strategy, selected, signal, onClick }) {
-  const Icon = strategy.icon;
-  const sigColor = signal?.signal === 'BUY' ? 'text-green-400' : signal?.signal === 'SELL' ? 'text-red-400' : 'text-gray-400';
-  const metricFmt = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2);
+function SignalPill({ signal, label, detail, active, onClick }) {
+  const s = SIG_STYLE[signal] ?? SIG_STYLE.HOLD;
   return (
     <button onClick={onClick}
-      className={`w-full text-left p-3 rounded-xl border transition-all ${
-        selected ? 'border-indigo-500 bg-indigo-500/10' : 'border-[#2a2a2a] bg-[#111] hover:border-indigo-500/40'
-      }`}>
-      <div className="flex items-center gap-2 mb-1.5">
-        <Icon size={13} className={selected ? 'text-indigo-400' : 'text-gray-500'} />
-        <span className={`text-xs font-semibold ${selected ? 'text-white' : 'text-gray-300'}`}>{strategy.label}</span>
-      </div>
-      <p className="text-gray-500 text-[10px] mb-2">{strategy.subtitle}</p>
-      {signal && (
-        <>
-          <div className="flex items-center justify-between mb-1.5">
-            <SignalBadge signal={signal.signal} />
-            <span className={`text-[10px] font-mono font-semibold ${sigColor}`}>
-              {metricFmt(signal.metric)}
-            </span>
-          </div>
-          <StrengthBar value={signal.strength} />
-        </>
-      )}
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-all ${active ? 'border-indigo-500 bg-indigo-500/10 text-indigo-300' : s.badge} hover:opacity-90`}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? 'bg-indigo-400' : s.dot}`} />
+      {label}
+      <span className={`font-bold ${active ? '' : ''}`}>{signal}</span>
     </button>
   );
 }
 
-// ─── Tab component ────────────────────────────────────────────────────────────
+function TradeSetupCard({ direction, price, atr, supportingSignals, symbol }) {
+  const isLong = direction === 'long';
+  const entry     = price;
+  const stop      = isLong ? +(price - 1.25 * atr).toFixed(2) : +(price + 1.25 * atr).toFixed(2);
+  const target    = isLong ? +(price + 2.5 * atr).toFixed(2)  : +(price - 2.5 * atr).toFixed(2);
+  const riskAmt   = Math.abs(entry - stop);
+  const rewardAmt = Math.abs(target - entry);
+  const rr        = riskAmt > 0 ? (rewardAmt / riskAmt).toFixed(1) : '—';
+  const pctStop   = ((Math.abs(entry - stop) / entry) * 100).toFixed(1);
+  const pctTarget = ((Math.abs(target - entry) / entry) * 100).toFixed(1);
+
+  return (
+    <div className={`rounded-xl border p-4 ${isLong ? 'border-green-500/20 bg-green-500/5' : 'border-red-500/20 bg-red-500/5'}`}>
+      <div className="flex items-center gap-2 mb-3">
+        {isLong ? <TrendingUp size={14} className="text-green-400" /> : <TrendingDown size={14} className="text-red-400" />}
+        <span className={`text-sm font-bold ${isLong ? 'text-green-400' : 'text-red-400'}`}>
+          {isLong ? 'Long Setup' : 'Short Setup'}
+        </span>
+        <span className="ml-auto text-[10px] text-gray-600 font-mono">{supportingSignals.length} signals agree</span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 mb-3">
+        <div className="bg-[#111] rounded-lg p-2.5 text-center">
+          <p className="text-gray-600 text-[10px] mb-0.5">Entry</p>
+          <p className="text-white font-mono font-bold text-sm">${entry.toFixed(2)}</p>
+          <p className="text-gray-600 text-[10px]">Market</p>
+        </div>
+        <div className={`rounded-lg p-2.5 text-center ${isLong ? 'bg-green-500/10' : 'bg-red-500/10'}`}>
+          <p className="text-gray-600 text-[10px] mb-0.5 flex items-center justify-center gap-1"><Target size={8} />Target</p>
+          <p className={`font-mono font-bold text-sm ${isLong ? 'text-green-400' : 'text-red-400'}`}>${target.toFixed(2)}</p>
+          <p className={`text-[10px] ${isLong ? 'text-green-600' : 'text-red-600'}`}>+{pctTarget}%</p>
+        </div>
+        <div className="bg-red-500/10 rounded-lg p-2.5 text-center">
+          <p className="text-gray-600 text-[10px] mb-0.5 flex items-center justify-center gap-1"><ShieldAlert size={8} />Stop</p>
+          <p className="text-red-400 font-mono font-bold text-sm">${stop.toFixed(2)}</p>
+          <p className="text-red-600 text-[10px]">-{pctStop}%</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20">
+          <span className="text-indigo-300 text-[11px] font-semibold">R:R {rr}:1</span>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {supportingSignals.map(s => (
+            <span key={s} className="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] border border-[#2a2a2a] text-gray-500">{s}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OptionCard({ stratId, rank, expiry, active, onClick }) {
+  const s = OPTION_STRATEGIES.find(o => o.id === stratId);
+  if (!s) return null;
+  const setupNote = EXPIRY_SETUP[expiry]?.[stratId] ?? '';
+  const dirStyle = s.direction === 'bullish'
+    ? 'text-green-400 bg-green-500/10 border-green-500/20'
+    : s.direction === 'bearish'
+    ? 'text-red-400 bg-red-500/10 border-red-500/20'
+    : 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20';
+  const riskStyle = s.risk.includes('Limited') ? 'text-green-400' : 'text-yellow-400';
+
+  return (
+    <button onClick={onClick}
+      className={`w-full text-left p-4 rounded-xl border transition-all ${active ? 'border-indigo-500 bg-indigo-500/8' : 'border-[#2a2a2a] bg-[#111] hover:border-indigo-500/40'}`}>
+      <div className="flex items-start gap-2 mb-2.5">
+        <span className={`text-[11px] font-bold shrink-0 mt-0.5 ${rank === 0 ? 'text-yellow-400' : 'text-gray-600'}`}>{rank === 0 ? '★' : `#${rank + 1}`}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-white text-sm font-semibold">{s.name}</span>
+            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${dirStyle}`}>{s.direction}</span>
+          </div>
+          <p className="text-gray-400 text-xs leading-relaxed">{s.desc}</p>
+        </div>
+      </div>
+      {setupNote && (
+        <p className="text-gray-600 text-[11px] leading-relaxed border-t border-[#222] pt-2.5">{setupNote}</p>
+      )}
+      <p className={`text-[10px] font-medium mt-2 ${riskStyle}`}>Risk: {s.risk}</p>
+    </button>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function StrategiesTab({ symbol }) {
-  const [activeDayStrat, setActiveDayStrat] = useState('rsi');
-  const [expiry, setExpiry]                 = useState('monthly');
-  const [activeOptStrat, setActiveOptStrat] = useState(null);
-  const [optRollWin, setOptRollWin]         = useState('30D');
+  const [activeSignal, setActiveSignal] = useState(null);
+  const [expiry, setExpiry]             = useState('monthly');
+  const [showAllNews, setShowAllNews]   = useState(false);
 
-  const { data: chart, loading }                      = useChart(symbol, '1d', '2y');
-  const { data: news = [], loading: newsLoading }     = useNews(symbol, 20);
+  const { data: chart, loading }                  = useChart(symbol, '1d', '2y');
+  const { data: news = [], loading: newsLoading } = useNews(symbol, 20);
+
   const ohlcv  = chart?.ohlcv ?? [];
   const closes = useMemo(() => ohlcv.map(p => p.close), [ohlcv]);
+  const price  = closes[closes.length - 1] ?? 0;
 
-  const daySignals = useMemo(
-    () => Object.fromEntries(DAY_STRATEGIES.map(s => [s.id, computeSignalFromCloses(s.id, closes)])),
+  const signals = useMemo(
+    () => Object.fromEntries(DAY_STRATEGIES.map(s => [s.id, computeSignal(s.id, closes)])),
     [closes],
   );
 
+  const signalCounts = useMemo(() => {
+    const vals = Object.values(signals);
+    return { BUY: vals.filter(s => s.signal === 'BUY').length, SELL: vals.filter(s => s.signal === 'SELL').length, HOLD: vals.filter(s => s.signal === 'HOLD').length };
+  }, [signals]);
+
+  const verdict = useMemo(() => {
+    const { BUY, SELL } = signalCounts;
+    const total = 6;
+    if (BUY > SELL && BUY >= 3) return { label: 'BULLISH', color: 'text-green-400', border: 'border-green-500/30', bg: 'bg-green-500/5', score: Math.round((BUY / total) * 100) };
+    if (SELL > BUY && SELL >= 3) return { label: 'BEARISH', color: 'text-red-400', border: 'border-red-500/30', bg: 'bg-red-500/5', score: Math.round((SELL / total) * 100) };
+    if (BUY > SELL) return { label: 'LEAN BULLISH', color: 'text-emerald-400', border: 'border-emerald-500/20', bg: 'bg-emerald-500/5', score: Math.round((BUY / total) * 100) };
+    if (SELL > BUY) return { label: 'LEAN BEARISH', color: 'text-orange-400', border: 'border-orange-500/20', bg: 'bg-orange-500/5', score: Math.round((SELL / total) * 100) };
+    return { label: 'NEUTRAL', color: 'text-gray-400', border: 'border-gray-600/30', bg: 'bg-gray-500/5', score: 50 };
+  }, [signalCounts]);
+
   const hv       = useMemo(() => computeHV(ohlcv), [ohlcv]);
+  const atr      = useMemo(() => computeATR(ohlcv), [ohlcv]);
   const trendPct = useMemo(() => {
     if (ohlcv.length < 2) return 0;
-    const slice = ohlcv.slice(-63);
-    return (slice[slice.length - 1].close - slice[0].close) / slice[0].close * 100;
+    const sl = ohlcv.slice(-63);
+    return (sl[sl.length - 1].close - sl[0].close) / sl[0].close * 100;
   }, [ohlcv]);
-  const trend          = trendPct > 5 ? 'bullish' : trendPct < -5 ? 'bearish' : 'neutral';
-  const hvLevel        = hv > 0.40 ? 'high' : hv > 0.20 ? 'medium' : 'low';
-  const optSuggestions  = useMemo(() => suggestOptStrategies(trend, hvLevel, expiry), [trend, hvLevel, expiry]);
-  const sentiment       = useMemo(() => analyzeSentiment(news), [news]);
-  const sentStrategies  = useMemo(() => sentiment ? getSentimentStrategies(sentiment.label, hvLevel) : [], [sentiment, hvLevel]);
 
-  useEffect(() => {
-    setActiveOptStrat(s => optSuggestions.includes(s) ? s : optSuggestions[0]);
-  }, [optSuggestions]);
+  const trend   = trendPct > 5 ? 'bullish' : trendPct < -5 ? 'bearish' : 'neutral';
+  const hvLevel = hv > 0.40 ? 'high' : hv > 0.20 ? 'medium' : 'low';
 
-  const optRolling = useMemo(
-    () => computeOptStratRolling(ohlcv, activeOptStrat, OPT_ROLL_WINDOW_DAYS[optRollWin], hv),
-    [ohlcv, activeOptStrat, optRollWin, hv],
-  );
+  const buySignals  = DAY_STRATEGIES.filter(s => signals[s.id]?.signal === 'BUY').map(s => s.label);
+  const sellSignals = DAY_STRATEGIES.filter(s => signals[s.id]?.signal === 'SELL').map(s => s.label);
 
-  const activeDayMeta = DAY_STRATEGIES.find(s => s.id === activeDayStrat);
-  const riskColor     = { Low: 'text-green-400', Medium: 'text-yellow-400', High: 'text-red-400' };
+  const optSuggestions = useMemo(() => suggestOptStrategies(trend, hvLevel, expiry), [trend, hvLevel, expiry]);
+  const sentiment      = useMemo(() => analyzeSentiment(news), [news]);
+
+  const trendCls  = trend === 'bullish' ? 'text-green-400' : trend === 'bearish' ? 'text-red-400' : 'text-gray-400';
+  const hvCls     = hvLevel === 'high' ? 'text-red-400' : hvLevel === 'medium' ? 'text-yellow-400' : 'text-green-400';
+  const sentColor = !sentiment ? 'text-gray-400' : sentiment.label === 'Bullish' ? 'text-green-400' : sentiment.label === 'Bearish' ? 'text-red-400' : 'text-gray-400';
+
+  const showLong  = signalCounts.BUY >= signalCounts.SELL && atr > 0 && price > 0;
+  const showShort = signalCounts.SELL >= signalCounts.BUY && atr > 0 && price > 0;
+  const showBoth  = signalCounts.BUY >= 2 && signalCounts.SELL >= 2;
+
+  const activeSignalMeta = activeSignal ? DAY_STRATEGIES.find(s => s.id === activeSignal) : null;
+  const riskColor = { Low: 'text-green-400', Medium: 'text-yellow-400', High: 'text-red-400' };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
 
-      {/* ── Day Trading Strategies ── */}
-      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Activity size={16} className="text-indigo-400" />
-          <h2 className="text-white font-semibold">Day Trading Strategies</h2>
-          <span className="text-gray-500 text-xs">Live signals computed from real price data</span>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
-          {DAY_STRATEGIES.map(s => (
-            <DayStratCard
-              key={s.id}
-              strategy={s}
-              selected={activeDayStrat === s.id}
-              signal={closes.length ? daySignals[s.id] : null}
-              onClick={() => setActiveDayStrat(s.id)}
-            />
-          ))}
-        </div>
-
-        {activeDayMeta && (
-          <div className="flex flex-wrap items-center gap-3 px-3 py-2 rounded-lg bg-[#111] border border-[#2a2a2a]">
-            <Cpu size={13} className="text-indigo-400 shrink-0" />
-            <p className="text-gray-400 text-xs flex-1">{activeDayMeta.desc}</p>
-            <span className={`text-xs font-semibold shrink-0 ${riskColor[activeDayMeta.risk]}`}>
-              Risk: {activeDayMeta.risk}
-            </span>
-            {daySignals[activeDayStrat]?.label && (
-              <span className="text-gray-500 text-xs font-mono shrink-0">{daySignals[activeDayStrat].label}</span>
+      {/* ── Verdict Banner ── */}
+      <div className={`rounded-xl border p-5 ${verdict.bg} ${verdict.border}`}>
+        <div className="flex flex-wrap items-center gap-4">
+          <div>
+            <p className="text-gray-600 text-[10px] font-semibold uppercase tracking-wider mb-1">Overall Signal · {symbol}</p>
+            <div className="flex items-center gap-3">
+              <span className={`text-2xl font-black tracking-tight ${verdict.color}`}>{verdict.label}</span>
+              <div className="flex gap-1.5">
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20 font-semibold">{signalCounts.BUY} Buy</span>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/20 font-semibold">{signalCounts.SELL} Sell</span>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-700/30 text-gray-500 border border-gray-700/40 font-semibold">{signalCounts.HOLD} Hold</span>
+              </div>
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap gap-4 text-xs">
+            <div className="text-center">
+              <p className="text-gray-600 text-[10px] mb-0.5">3M Trend</p>
+              <p className={`font-mono font-bold ${trendCls}`}>{trendPct >= 0 ? '+' : ''}{trendPct.toFixed(1)}%</p>
+            </div>
+            <div className="text-center">
+              <p className="text-gray-600 text-[10px] mb-0.5">HV (60D)</p>
+              <p className={`font-mono font-bold ${hvCls}`}>{(hv * 100).toFixed(0)}%</p>
+            </div>
+            <div className="text-center">
+              <p className="text-gray-600 text-[10px] mb-0.5">ATR(14)</p>
+              <p className="font-mono font-bold text-white">${atr.toFixed(2)}</p>
+            </div>
+            {sentiment && (
+              <div className="text-center">
+                <p className="text-gray-600 text-[10px] mb-0.5">Sentiment</p>
+                <p className={`font-mono font-bold ${sentColor}`}>{sentiment.score}/100</p>
+              </div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* ── Technical Signals ── */}
+      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Activity size={14} className="text-indigo-400" />
+          <h2 className="text-white font-semibold text-sm">Technical Signals</h2>
+          <span className="text-gray-600 text-[11px]">2Y daily · click for detail</span>
+        </div>
+
+        {loading ? (
+          <div className="flex flex-wrap gap-2">{[...Array(6)].map((_, i) => <div key={i} className="h-8 w-28 bg-[#111] rounded-lg animate-pulse" />)}</div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {DAY_STRATEGIES.map(s => (
+                <SignalPill
+                  key={s.id}
+                  signal={signals[s.id]?.signal ?? 'HOLD'}
+                  label={s.label}
+                  detail={signals[s.id]?.label}
+                  active={activeSignal === s.id}
+                  onClick={() => setActiveSignal(prev => prev === s.id ? null : s.id)}
+                />
+              ))}
+            </div>
+
+            {activeSignal && activeSignalMeta && (
+              <div className="flex flex-wrap items-center gap-3 px-4 py-3 rounded-xl bg-[#111] border border-[#242424]">
+                <Cpu size={12} className="text-indigo-400 shrink-0" />
+                <p className="text-gray-400 text-xs flex-1 leading-relaxed">{activeSignalMeta.desc}</p>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className={`text-[11px] font-semibold ${riskColor[activeSignalMeta.risk]}`}>Risk: {activeSignalMeta.risk}</span>
+                  <span className="text-gray-600 text-[10px] font-mono">{signals[activeSignal]?.label}</span>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      {/* ── Options Strategy Analyzer ── */}
+      {/* ── Equity Trade Setups ── */}
+      {!loading && price > 0 && atr > 0 && (
+        <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Target size={14} className="text-indigo-400" />
+            <h2 className="text-white font-semibold text-sm">Equity Trade Setup</h2>
+            <span className="text-gray-600 text-[11px]">ATR-based targets · 2:1 R:R</span>
+          </div>
+
+          <div className={`grid gap-4 ${showBoth ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 max-w-sm'}`}>
+            {(showLong || showBoth) && (
+              <TradeSetupCard direction="long"  price={price} atr={atr} supportingSignals={buySignals}  symbol={symbol} />
+            )}
+            {(showShort || showBoth) && (
+              <TradeSetupCard direction="short" price={price} atr={atr} supportingSignals={sellSignals} symbol={symbol} />
+            )}
+          </div>
+          <p className="text-gray-700 text-[10px] mt-3">Educational only. Not financial advice. Always use your own risk management.</p>
+        </div>
+      )}
+
+      {/* ── Options Trade Ideas ── */}
       <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
         <div className="flex items-center gap-2 mb-4">
-          <Layers size={16} className="text-indigo-400" />
-          <h2 className="text-white font-semibold">Options Strategy Analyzer</h2>
-          <span className="text-gray-500 text-xs">AI-recommended based on 2Y price action</span>
+          <Layers size={14} className="text-indigo-400" />
+          <h2 className="text-white font-semibold text-sm">Options Trade Ideas</h2>
+          <span className="text-gray-600 text-[11px]">based on trend + volatility</span>
         </div>
 
-        {!loading && ohlcv.length > 0 ? (
-          <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-4">
-            <div className="flex flex-wrap items-center gap-2 mb-2">
-              <Zap size={13} className="text-yellow-400 shrink-0" />
-              <span className="text-white text-sm font-semibold">Recommended for Current Conditions</span>
-              <div className="flex items-center gap-2 ml-auto">
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${trend === 'bullish' ? 'bg-green-500/10 text-green-400' : trend === 'bearish' ? 'bg-red-500/10 text-red-400' : 'bg-gray-500/10 text-gray-400'}`}>
-                  {trend} {trendPct >= 0 ? '+' : ''}{trendPct.toFixed(1)}% (3M)
-                </span>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${hvLevel === 'high' ? 'bg-red-500/10 text-red-400' : hvLevel === 'medium' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-green-500/10 text-green-400'}`}>
-                  HV {(hv * 100).toFixed(0)}% · {hvLevel} IV
-                </span>
-              </div>
-            </div>
-            <p className="text-gray-500 text-xs mb-4">{getConditionRationale(trend, hvLevel, expiry)}</p>
-
+        {loading ? (
+          <div className="space-y-3">
+            <div className="flex gap-2">{[...Array(5)].map((_, i) => <div key={i} className="h-9 w-24 bg-[#111] rounded-lg animate-pulse" />)}</div>
+            <div className="grid grid-cols-2 gap-3">{[0, 1].map(i => <div key={i} className="h-28 bg-[#111] rounded-xl animate-pulse" />)}</div>
+          </div>
+        ) : ohlcv.length === 0 ? (
+          <p className="text-gray-600 text-sm text-center py-8">No data available</p>
+        ) : (
+          <>
             <div className="flex flex-wrap gap-1.5 mb-4">
               {EXPIRY_OPTIONS.map(opt => (
                 <button key={opt.id} onClick={() => setExpiry(opt.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                    expiry === opt.id
-                      ? 'bg-indigo-600 border-indigo-600 text-white'
-                      : 'bg-[#111] border-[#2a2a2a] text-gray-400 hover:text-white hover:border-indigo-500/40'
+                    expiry === opt.id ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-[#111] border-[#2a2a2a] text-gray-400 hover:text-white hover:border-indigo-500/40'
                   }`}>
                   {opt.label}
-                  <span className={`text-[10px] ${expiry === opt.id ? 'text-indigo-200' : 'text-gray-600'}`}>
-                    {opt.dte}
-                  </span>
+                  <span className={`text-[10px] ${expiry === opt.id ? 'text-indigo-200' : 'text-gray-600'}`}>{opt.dte}</span>
                 </button>
               ))}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
-              {optSuggestions.map((id, i) => {
-                const s = OPTION_STRATEGIES.find(o => o.id === id);
-                if (!s) return null;
-                const dirColor = s.direction === 'bullish' ? 'text-green-400 bg-green-500/10'
-                  : s.direction === 'bearish' ? 'text-red-400 bg-red-500/10'
-                  : 'text-indigo-400 bg-indigo-500/10';
-                const setupNote = EXPIRY_SETUP[expiry]?.[id] ?? '';
-                const isActive  = activeOptStrat === id;
-                return (
-                  <button key={id} onClick={() => setActiveOptStrat(id)}
-                    className={`text-left p-3 rounded-lg border transition-all ${
-                      isActive ? 'border-indigo-500 bg-indigo-500/10' : 'border-[#2a2a2a] bg-[#0f0f0f] hover:border-indigo-500/40'
-                    }`}>
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-[10px] font-bold text-yellow-400 shrink-0">
-                        {i === 0 ? '★ Best Fit' : `#${i + 1}`}
-                      </span>
-                      <span className="text-white text-xs font-semibold">{s.name}</span>
-                      <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full ${dirColor}`}>
-                        {s.direction}
-                      </span>
-                    </div>
-                    <p className="text-gray-400 text-[11px] leading-relaxed mb-1.5">{s.desc}</p>
-                    {setupNote && (
-                      <p className="text-gray-600 text-[10px] leading-relaxed border-t border-[#2a2a2a] pt-1.5">
-                        {setupNote}
-                      </p>
-                    )}
-                    <p className={`text-[10px] mt-1.5 ${s.riskColor}`}>Risk: {s.risk}</p>
-                  </button>
-                );
-              })}
+            <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-[#111] border border-[#242424]">
+              {trend === 'bullish' ? <TrendingUp size={11} className="text-green-400" /> : trend === 'bearish' ? <TrendingDown size={11} className="text-red-400" /> : <Minus size={11} className="text-gray-400" />}
+              <p className="text-gray-500 text-[11px]">
+                <span className={trendCls}>{trend}</span> trend · <span className={hvCls}>{hvLevel} volatility</span>
+                {' — '}{hvLevel === 'high' ? 'sell premium; avoid naked long options' : hvLevel === 'low' ? 'cheap options favor directional buys' : 'balanced environment'}
+              </p>
             </div>
 
-            {/* Rolling returns */}
-            <div className="border-t border-[#2a2a2a] pt-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div>
-                  <p className="text-white text-sm font-semibold">
-                    {OPTION_STRATEGIES.find(o => o.id === activeOptStrat)?.name ?? '—'} — Rolling {optRollWin} Returns
-                  </p>
-                  <p className="text-gray-600 text-xs mt-0.5">
-                    Bars: strategy P&L as % of cost · Line: underlying stock return · click a card above to switch
-                  </p>
-                </div>
-                <div className="flex gap-1.5">
-                  {OPT_ROLL_WINDOWS.map(w => (
-                    <button key={w} onClick={() => setOptRollWin(w)}
-                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                        optRollWin === w ? 'bg-indigo-600 text-white' : 'bg-[#111] border border-[#2a2a2a] text-gray-400 hover:text-white'
-                      }`}>
-                      {w}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <RollingChart
-                data={optRolling}
-                loading={loading}
-                emptyMsg="Not enough data — try a shorter window."
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {optSuggestions.map((id, i) => (
+                <OptionCard key={id} stratId={id} rank={i} expiry={expiry} active={false} onClick={() => {}} />
+              ))}
             </div>
-          </div>
-        ) : loading ? (
-          <div className="bg-[#111] rounded-lg animate-pulse h-32" />
-        ) : (
-          <p className="text-gray-600 text-sm text-center py-8">No data available</p>
+          </>
         )}
       </div>
 
-      {/* ── Social Sentiment Strategy Analyzer ── */}
+      {/* ── News Sentiment ── */}
       <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
         <div className="flex items-center gap-2 mb-4">
-          <MessageCircle size={16} className="text-indigo-400" />
-          <h2 className="text-white font-semibold">Social Sentiment Strategy Analyzer</h2>
-          <span className="text-gray-500 text-xs">News headline sentiment · last 20 articles</span>
+          <MessageCircle size={14} className="text-indigo-400" />
+          <h2 className="text-white font-semibold text-sm">News Sentiment</h2>
+          {sentiment && <span className="text-gray-600 text-[11px]">{sentiment.total} headlines analyzed</span>}
         </div>
 
         {newsLoading ? (
-          <div className="space-y-3">
-            {[...Array(3)].map((_, i) => <div key={i} className="bg-[#111] rounded-lg animate-pulse h-10" />)}
-          </div>
+          <div className="space-y-2">{[...Array(3)].map((_, i) => <div key={i} className="h-10 bg-[#111] rounded-lg animate-pulse" />)}</div>
         ) : !sentiment ? (
           <p className="text-gray-600 text-sm text-center py-8">No news data available for {symbol}</p>
         ) : (
           <>
-            {/* Score bar */}
-            <div className="bg-[#111] border border-[#2a2a2a] rounded-xl p-4 mb-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  {sentiment.label === 'Bullish'
-                    ? <TrendingUp size={14} className="text-green-400" />
-                    : sentiment.label === 'Bearish'
-                    ? <TrendingDown size={14} className="text-red-400" />
-                    : <Minus size={14} className="text-gray-400" />}
-                  <span className={`text-sm font-bold ${sentiment.label === 'Bullish' ? 'text-green-400' : sentiment.label === 'Bearish' ? 'text-red-400' : 'text-gray-300'}`}>
-                    {sentiment.strength} {sentiment.label}
-                  </span>
-                </div>
-                <span className="text-white font-mono font-bold text-sm">{sentiment.score}/100</span>
+            {/* Score row */}
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex-1 relative h-2 bg-[#252525] rounded-full overflow-hidden">
+                <div className="absolute inset-y-0 left-0 w-1/2 bg-gradient-to-r from-red-500/30 to-transparent" />
+                <div className="absolute inset-y-0 right-0 w-1/2 bg-gradient-to-l from-green-500/30 to-transparent" />
+                <div className="absolute top-0 h-full w-0.5 bg-white rounded-full transition-all duration-500" style={{ left: `calc(${sentiment.score}% - 1px)` }} />
               </div>
+              <span className={`text-sm font-bold font-mono ${sentColor}`}>{sentiment.score}/100</span>
+              <span className={`text-xs font-semibold ${sentColor}`}>{sentiment.strength} {sentiment.label}</span>
+            </div>
 
-              <div className="relative h-3 bg-[#2a2a2a] rounded-full overflow-hidden mb-3">
-                <div className="absolute inset-y-0 left-0 w-1/2 bg-gradient-to-r from-red-500/40 to-transparent" />
-                <div className="absolute inset-y-0 right-0 w-1/2 bg-gradient-to-l from-green-500/40 to-transparent" />
-                <div
-                  className="absolute top-0 h-full w-1 bg-white rounded-full shadow-lg transition-all duration-500"
-                  style={{ left: `calc(${sentiment.score}% - 2px)` }}
-                />
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <span className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full bg-green-500/10 text-green-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-                  {sentiment.bullishCount} Bullish
-                </span>
-                <span className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full bg-red-500/10 text-red-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-                  {sentiment.bearishCount} Bearish
-                </span>
-                <span className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full bg-gray-500/10 text-gray-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 shrink-0" />
-                  {sentiment.neutralCount} Neutral
-                </span>
-                <span className="ml-auto text-gray-600 text-[10px] self-center">{sentiment.total} headlines analyzed</span>
-              </div>
+            <div className="flex gap-2 mb-4">
+              <span className="text-[11px] px-2.5 py-1 rounded-full bg-green-500/10 text-green-400 border border-green-500/20">{sentiment.bullishCount} Bullish</span>
+              <span className="text-[11px] px-2.5 py-1 rounded-full bg-red-500/10   text-red-400   border border-red-500/20">{sentiment.bearishCount} Bearish</span>
+              <span className="text-[11px] px-2.5 py-1 rounded-full bg-gray-700/30  text-gray-500  border border-gray-700/40">{sentiment.neutralCount} Neutral</span>
             </div>
 
             {/* Headlines */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
-              {sentiment.topBullish.length > 0 && (
-                <div className="bg-[#0f0f0f] border border-green-500/10 rounded-xl p-3">
-                  <p className="text-green-400 text-[10px] font-semibold uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    <TrendingUp size={11} /> Bullish Signals
-                  </p>
-                  <ul className="space-y-2">
-                    {sentiment.topBullish.map((h, i) => (
-                      <li key={i}>
-                        <a href={h.url} target="_blank" rel="noreferrer"
-                          className="flex items-start gap-2 rounded-lg p-1.5 hover:bg-green-500/5 transition-colors group">
-                          <span className="text-green-500 text-[10px] mt-0.5 shrink-0">▲</span>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-gray-300 text-[11px] leading-snug line-clamp-2 group-hover:text-white transition-colors">{h.title}</p>
-                            <p className="text-gray-600 text-[10px] mt-0.5">{h.source} · {h.time}</p>
-                          </div>
-                          <ExternalLink size={10} className="text-gray-700 group-hover:text-green-400 transition-colors shrink-0 mt-0.5" />
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {sentiment.topBearish.length > 0 && (
-                <div className="bg-[#0f0f0f] border border-red-500/10 rounded-xl p-3">
-                  <p className="text-red-400 text-[10px] font-semibold uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    <TrendingDown size={11} /> Bearish Signals
-                  </p>
-                  <ul className="space-y-2">
-                    {sentiment.topBearish.map((h, i) => (
-                      <li key={i}>
-                        <a href={h.url} target="_blank" rel="noreferrer"
-                          className="flex items-start gap-2 rounded-lg p-1.5 hover:bg-red-500/5 transition-colors group">
-                          <span className="text-red-500 text-[10px] mt-0.5 shrink-0">▼</span>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-gray-300 text-[11px] leading-snug line-clamp-2 group-hover:text-white transition-colors">{h.title}</p>
-                            <p className="text-gray-600 text-[10px] mt-0.5">{h.source} · {h.time}</p>
-                          </div>
-                          <ExternalLink size={10} className="text-gray-700 group-hover:text-red-400 transition-colors shrink-0 mt-0.5" />
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {sentiment.topBullish.length === 0 && sentiment.topBearish.length === 0 && (
-                <div className="sm:col-span-2 flex items-center gap-2 px-3 py-4 bg-[#0f0f0f] border border-[#2a2a2a] rounded-xl">
-                  <Newspaper size={14} className="text-gray-600 shrink-0" />
-                  <p className="text-gray-500 text-xs">No strong directional signals found in recent headlines.</p>
-                </div>
-              )}
+            <div className="space-y-1.5">
+              {(showAllNews ? sentiment.top : sentiment.top.slice(0, 3)).map((h, i) => (
+                <a key={i} href={h.url} target="_blank" rel="noreferrer"
+                  className="flex items-start gap-2.5 p-2.5 rounded-lg bg-[#111] border border-[#222] hover:border-indigo-500/30 hover:bg-[#161616] transition-all group">
+                  <span className={`text-[10px] mt-0.5 shrink-0 font-bold ${h.net > 0 ? 'text-green-500' : 'text-red-500'}`}>{h.net > 0 ? '▲' : '▼'}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-gray-300 text-xs leading-snug line-clamp-2 group-hover:text-white transition-colors">{h.title}</p>
+                    <p className="text-gray-600 text-[10px] mt-0.5">{h.source} · {h.time}</p>
+                  </div>
+                  <ExternalLink size={9} className="text-gray-700 group-hover:text-indigo-400 transition-colors shrink-0 mt-0.5" />
+                </a>
+              ))}
             </div>
 
-            {/* Sentiment-based strategy recommendations */}
-            <div className="border-t border-[#2a2a2a] pt-4">
-              <p className="text-white text-sm font-semibold mb-1 flex items-center gap-2">
-                <Zap size={13} className="text-yellow-400" />
-                Sentiment-Driven Strategy Recommendations
-              </p>
-              <p className="text-gray-500 text-xs mb-3">
-                Based on <span className={sentiment.label === 'Bullish' ? 'text-green-400' : sentiment.label === 'Bearish' ? 'text-red-400' : 'text-gray-300'}>{sentiment.strength.toLowerCase()} {sentiment.label.toLowerCase()}</span> sentiment · {hvLevel} IV environment
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {sentStrategies.map((id, i) => {
-                  const s = OPTION_STRATEGIES.find(o => o.id === id);
-                  if (!s) return null;
-                  const dirColor = s.direction === 'bullish' ? 'text-green-400 bg-green-500/10'
-                    : s.direction === 'bearish' ? 'text-red-400 bg-red-500/10'
-                    : 'text-indigo-400 bg-indigo-500/10';
-                  return (
-                    <div key={id} className="p-3 rounded-lg border border-[#2a2a2a] bg-[#0f0f0f]">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="text-[10px] font-bold text-yellow-400 shrink-0">{i === 0 ? '★ Best Fit' : `#${i + 1}`}</span>
-                        <span className="text-white text-xs font-semibold">{s.name}</span>
-                        <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full ${dirColor}`}>{s.direction}</span>
-                      </div>
-                      <p className="text-gray-400 text-[11px] leading-relaxed mb-1.5">{s.desc}</p>
-                      <p className={`text-[10px] ${s.riskColor}`}>Risk: {s.risk}</p>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            {sentiment.top.length > 3 && (
+              <button onClick={() => setShowAllNews(v => !v)}
+                className="flex items-center gap-1 text-gray-600 hover:text-gray-300 text-[11px] mt-2 transition-colors">
+                {showAllNews ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                {showAllNews ? 'Show less' : `Show ${sentiment.top.length - 3} more`}
+              </button>
+            )}
           </>
         )}
       </div>

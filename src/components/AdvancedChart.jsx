@@ -155,7 +155,6 @@ export default function AdvancedChart({ ohlcv, color, symbol, range, onRangeChan
   const [ind, setInd]           = useState({ ema9: false, ema21: false, bb: false, rsi: false, macd: false });
   const [fullscreen, setFs]     = useState(false);
   const [compareSyms, setCmpSyms] = useState([]);
-  const [cmpInput, setCmpInput]   = useState('');
 
   const { interval: cmpInterval, range: cmpRange } = RANGE_MAP[range] ?? RANGE_MAP['3M'];
   const cmpCharts = useCompareCharts(compareSyms, cmpInterval, cmpRange);
@@ -182,13 +181,7 @@ export default function AdvancedChart({ ohlcv, color, symbol, range, onRangeChan
     return ohlcv.map(d => ({ date: d.date, pct: +((((d.price ?? d.close) - base) / base) * 100).toFixed(2) }));
   }, [isComparing, ohlcv]);
 
-  function addCompare() {
-    const syms = cmpInput.toUpperCase().split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
-    const toAdd = syms.filter(s => s !== symbol && !compareSyms.includes(s));
-    if (!toAdd.length) return;
-    setCmpSyms(p => [...p, ...toAdd].slice(0, 10));
-    setCmpInput('');
-  }
+  function addSymbols(syms) { setCmpSyms(p => [...p, ...syms.filter(s => s !== symbol && !p.includes(s))].slice(0, 10)); }
   function removeCompare(sym) { setCmpSyms(p => p.filter(s => s !== sym)); }
 
   // Escape → exit fullscreen
@@ -431,9 +424,7 @@ export default function AdvancedChart({ ohlcv, color, symbol, range, onRangeChan
   const compareBar = (
     <CompareBar
       compareSyms={compareSyms}
-      cmpInput={cmpInput}
-      onInputChange={setCmpInput}
-      onAdd={addCompare}
+      onAdd={addSymbols}
       onRemove={removeCompare}
       onClear={() => setCmpSyms([])}
       primarySymbol={symbol}

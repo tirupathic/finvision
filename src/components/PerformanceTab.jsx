@@ -1,20 +1,19 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {
-  ComposedChart, Area, BarChart, Bar, Line, Cell,
+  ComposedChart, Area, Line, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from 'recharts';
-import { TrendingUp, TrendingDown, Activity, Info, Zap, Maximize2, Minimize2, Plus, X } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Info, Zap, Maximize2, Minimize2 } from 'lucide-react';
 import { useChart } from '../hooks/useYahoo';
 import { usePersistedRange } from '../hooks/usePersistedRange';
+import CompareBar from './CompareBar';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DURATIONS    = ['1M', '3M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', '10Y', '15Y', '20Y'];
-const WINDOWS      = ['7D', '14D', '30D', '90D'];
 const RANGE_MAP    = { '1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y', 'YTD': 'ytd', '2Y': '2y', '3Y': '3y', '5Y': '5y', '10Y': '10y', '15Y': 'max', '20Y': 'max' };
 const INTERVAL_MAP = { '1M': '1d', '3M': '1d', '6M': '1d', '1Y': '1d', 'YTD': '1d', '2Y': '1d', '3Y': '1d', '5Y': '1d', '10Y': '1d', '15Y': '1wk', '20Y': '1wk' };
 const YEAR_FILTER  = { '15Y': 15, '20Y': 20 };
-const WINDOW_DAYS  = { '7D': 7, '14D': 14, '30D': 30, '90D': 90 };
 const CMP_COLORS   = ['#f59e0b', '#818cf8', '#34d399', '#f87171', '#fb923c', '#a3e635', '#22d3ee', '#e879f9', '#94a3b8', '#fbbf24'];
 
 // ─── Stats & metrics ─────────────────────────────────────────────────────────
@@ -57,15 +56,16 @@ function computeMetrics(ohlcv) {
   return { totalReturn, annReturn, sharpe, maxDD: maxDD * 100, maxDDStart, maxDDEnd, maxDDPeakPrice, maxDDTroughPrice, startDate: ohlcv[0].date, startPrice: first, endDate: ohlcv.at(-1).date, endPrice: last, maxProfit, maxProfitLowDate, maxProfitLowPrice, maxProfitHighDate, maxProfitHighPrice };
 }
 
-function computeRolling(ohlcv, window) {
-  if (!ohlcv || ohlcv.length <= window) return [];
-  return ohlcv.slice(window).map((pt, i) => ({ date: pt.date, ret: +((pt.close - ohlcv[i].close) / ohlcv[i].close * 100).toFixed(2) }));
-}
-
 function toReturnSeries(ohlcv) {
   if (!ohlcv?.length) return [];
   const base = ohlcv[0].close;
   return ohlcv.map(pt => ({ date: pt.date, ret: +((pt.close - base) / base * 100).toFixed(3), price: pt.close }));
+}
+
+function toGrowth10K(ohlcv) {
+  if (!ohlcv?.length) return [];
+  const base = ohlcv[0].close;
+  return ohlcv.map(pt => ({ date: pt.date, value: +(10000 * pt.close / base).toFixed(2) }));
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -99,13 +99,25 @@ function MetricCard({ label, value, sub, color, icon: Icon }) {
   );
 }
 
-const RollingTooltip = ({ active, payload }) => {
+const GrowthTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
-  const v = payload[0]?.value ?? 0;
+  const date = payload[0]?.payload?.date;
+  const fmt  = v => v?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (
-    <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs font-mono space-y-0.5">
-      <p className="text-gray-400">{payload[0].payload.date}</p>
-      <p className={v >= 0 ? 'text-green-400' : 'text-red-400'}>{v >= 0 ? '+' : ''}{v.toFixed(2)}%</p>
+    <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs font-mono space-y-1 min-w-[160px]">
+      <p className="text-gray-400 mb-1">{date}</p>
+      {payload.map(p => {
+        if (p.value == null) return null;
+        const gain = p.value - 10000;
+        return (
+          <div key={p.dataKey} className="flex justify-between gap-4">
+            <span style={{ color: p.stroke ?? p.color }} className="font-bold">{p.dataKey}</span>
+            <span className={gain >= 0 ? 'text-green-400' : 'text-red-400'}>
+              ${fmt(p.value)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 };
@@ -113,9 +125,8 @@ const RollingTooltip = ({ active, payload }) => {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function PerformanceTab({ symbol }) {
-  const [duration,   setDuration]   = usePersistedRange(DURATIONS, '3M');
-  const [rollingWin, setRollingWin] = useState('30D');
-  const [chartMode,  setChartMode]  = useState('pct');
+  const [duration,  setDuration]  = usePersistedRange(DURATIONS, '3M');
+  const [chartMode, setChartMode] = useState('pct');
   const [pinA, setPinA] = useState(null);
   const [pinB, setPinB] = useState(null);
   const [isFull, setIsFull] = useState(false);
@@ -123,7 +134,6 @@ export default function PerformanceTab({ symbol }) {
 
   // Compare symbols (max 10, fixed hooks — Rules of Hooks)
   const [compareSyms, setCompareSyms] = useState([]);
-  const [cmpInput, setCmpInput]       = useState('');
 
   const { data: cmpChart0 } = useChart(compareSyms[0] ?? null, INTERVAL_MAP[duration], RANGE_MAP[duration]);
   const { data: cmpChart1 } = useChart(compareSyms[1] ?? null, INTERVAL_MAP[duration], RANGE_MAP[duration]);
@@ -143,6 +153,7 @@ export default function PerformanceTab({ symbol }) {
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
   }, []);
+
 
   function toggleFull() {
     if (!document.fullscreenElement) chartAreaRef.current?.requestFullscreen?.();
@@ -181,7 +192,7 @@ export default function PerformanceTab({ symbol }) {
   }, [chart, duration]);
 
   useEffect(() => { setPinA(null); setPinB(null); }, [symbol, duration]);
-  useEffect(() => { setCompareSyms([]); setCmpInput(''); }, [symbol]);
+  useEffect(() => { setCompareSyms([]); }, [symbol]);
 
   function handleChartClick(e) {
     const idx = e?.activeTooltipIndex;
@@ -191,17 +202,8 @@ export default function PerformanceTab({ symbol }) {
     setPinA(idx); setPinB(null);
   }
 
-  function addCompare() {
-    const syms = cmpInput.toUpperCase().split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
-    const toAdd = syms.filter(s => s !== symbol && !compareSyms.includes(s));
-    if (!toAdd.length) return;
-    setCompareSyms(prev => [...prev, ...toAdd].slice(0, 10));
-    setCmpInput('');
-  }
-
-  function removeCompare(sym) {
-    setCompareSyms(prev => prev.filter(s => s !== sym));
-  }
+  function addSymbols(syms) { setCompareSyms(prev => [...prev, ...syms.filter(s => s !== symbol && !prev.includes(s))].slice(0, 10)); }
+  function removeCompare(sym) { setCompareSyms(prev => prev.filter(s => s !== sym)); }
 
   const isComparing = compareSyms.length > 0;
   const effectiveMode = isComparing ? 'pct' : chartMode;
@@ -213,7 +215,29 @@ export default function PerformanceTab({ symbol }) {
   const selectedOhlcv = useMemo(() => selA !== null ? ohlcv.slice(selA, selB + 1) : ohlcv, [ohlcv, selA, selB]);
   const returnSeries  = useMemo(() => toReturnSeries(ohlcv), [ohlcv]);
   const metrics       = useMemo(() => computeMetrics(selectedOhlcv), [selectedOhlcv]);
-  const rollingData   = useMemo(() => computeRolling(selectedOhlcv, WINDOW_DAYS[rollingWin]), [selectedOhlcv, rollingWin]);
+  const growth10K = useMemo(() => toGrowth10K(selectedOhlcv), [selectedOhlcv]);
+
+  // ── $10K compare data (primary + all compared symbols, each starting at $10K) ─
+  const growth10KData = useMemo(() => {
+    if (!ohlcv.length) return [];
+    const base1 = ohlcv[0].close;
+    const active = isComparing
+      ? compareSyms.map((sym, i) => {
+          const ch = cmpRawCharts[i];
+          if (!ch?.ohlcv?.length) return null;
+          const base = ch.ohlcv[0].close;
+          return { sym, map: new Map(ch.ohlcv.map(d => [d.date, +(10000 * d.close / base).toFixed(2)])) };
+        }).filter(Boolean)
+      : [];
+
+    return ohlcv.map(d => {
+      const row = { date: d.date, [symbol]: +(10000 * d.close / base1).toFixed(2) };
+      active.forEach(({ sym, map }) => { row[sym] = map.get(d.date) ?? null; });
+      return row;
+    });
+  }, [isComparing, ohlcv, symbol, compareSyms,
+      cmpChart0, cmpChart1, cmpChart2, cmpChart3, cmpChart4, cmpChart5,
+      cmpChart6, cmpChart7, cmpChart8, cmpChart9]);
 
   // ── Single-symbol chart data ────────────────────────────────────────────────
   const chartData = useMemo(() => {
@@ -241,7 +265,9 @@ export default function PerformanceTab({ symbol }) {
       active.forEach(({ sym, map }) => { row[sym] = map.get(d.date) ?? null; });
       return row;
     });
-  }, [isComparing, ohlcv, symbol, compareSyms, cmpChart0, cmpChart1, cmpChart2, cmpChart3]);
+  }, [isComparing, ohlcv, symbol, compareSyms,
+      cmpChart0, cmpChart1, cmpChart2, cmpChart3, cmpChart4, cmpChart5,
+      cmpChart6, cmpChart7, cmpChart8, cmpChart9]);
 
   const xTicks = useMemo(() => {
     const src = isComparing ? compareData : chartData;
@@ -309,48 +335,18 @@ export default function PerformanceTab({ symbol }) {
       </div>
 
       {/* Compare bar */}
-      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-gray-400 text-sm font-medium shrink-0">Compare with <span className="text-gray-600 text-xs font-normal">({compareSyms.length}/10)</span></span>
-          {/* Added symbols */}
-          {compareSyms.map((sym, i) => (
-            <span key={sym} className="inline-flex items-center gap-1.5 pl-3 pr-2 py-1 rounded-full text-xs font-bold"
-              style={{ backgroundColor: `${CMP_COLORS[i]}20`, color: CMP_COLORS[i], border: `1px solid ${CMP_COLORS[i]}40` }}>
-              {sym}
-              <button onClick={() => removeCompare(sym)} className="hover:opacity-70 transition-opacity">
-                <X size={11} />
-              </button>
-            </span>
-          ))}
-          {/* Input */}
-          {compareSyms.length < 10 && (
-            <form onSubmit={e => { e.preventDefault(); addCompare(); }} className="flex items-center gap-2">
-              <input
-                value={cmpInput}
-                onChange={e => setCmpInput(e.target.value.toUpperCase())}
-                placeholder="AAPL, MSFT…"
-                maxLength={60}
-                className="w-40 bg-[#111] border border-[#3a3a3a] rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-600 font-mono uppercase focus:outline-none focus:border-indigo-500 transition-colors"
-              />
-              <button type="submit"
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium transition-colors">
-                <Plus size={12} /> Add
-              </button>
-            </form>
-          )}
-          {isComparing && (
-            <button onClick={() => setCompareSyms([])}
-              className="ml-auto text-xs text-gray-500 hover:text-red-400 transition-colors">
-              Clear all
-            </button>
-          )}
-        </div>
-        {isComparing && (
-          <p className="text-gray-600 text-[10px] mt-2">
-            Showing normalized % return from period start · Price mode locked to % change when comparing
-          </p>
-        )}
-      </div>
+      <CompareBar
+        compareSyms={compareSyms}
+        onAdd={addSymbols}
+        onRemove={removeCompare}
+        onClear={() => setCompareSyms([])}
+        primarySymbol={symbol}
+      />
+      {isComparing && (
+        <p className="text-gray-600 text-[10px] -mt-4">
+          Showing normalized % return from period start · Price mode locked to % change when comparing
+        </p>
+      )}
 
       {/* Metric cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -365,6 +361,87 @@ export default function PerformanceTab({ symbol }) {
         <MetricCard label="Max Drawdown" value={`${metrics.maxDD.toFixed(2)}%`}
           sub={metrics.maxDDStart ? `$${metrics.maxDDPeakPrice?.toFixed(2)} (${metrics.maxDDStart}) → $${metrics.maxDDTroughPrice?.toFixed(2)} (${metrics.maxDDEnd})` : 'Peak-to-trough'}
           color="text-red-400" icon={TrendingDown} />
+      </div>
+
+      {/* $10K Growth */}
+      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-white font-semibold">$10,000 Sample Growth</h2>
+            <p className="text-gray-600 text-xs mt-0.5">
+              $10,000 invested at period start{!isFullRange ? ' (selected range)' : ''} · each symbol normalized independently
+            </p>
+          </div>
+          {/* Final value pills */}
+          {growth10KData.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {[symbol, ...compareSyms].map((sym, i) => {
+                const lastRow = growth10KData.at(-1);
+                const val  = lastRow?.[sym];
+                if (val == null) return null;
+                const gain = val - 10000;
+                const pct  = (gain / 10000) * 100;
+                const color = i === 0 ? stroke : CMP_COLORS[i - 1];
+                return (
+                  <div key={sym} className="text-right">
+                    <p className="text-[10px] font-semibold mb-0.5" style={{ color }}>{sym}</p>
+                    <p className="text-sm font-bold font-mono" style={{ color }}>
+                      ${val.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                    </p>
+                    <p className="text-[10px] font-mono" style={{ color }}>
+                      {pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Legend when comparing */}
+        {isComparing && (
+          <div className="flex flex-wrap gap-3 mb-3">
+            <span className="flex items-center gap-1.5 text-[11px]" style={{ color: stroke }}>
+              <span className="w-4 h-0.5 bg-current inline-block rounded" /> {symbol}
+            </span>
+            {compareSyms.map((sym, i) => (
+              <span key={sym} className="flex items-center gap-1.5 text-[11px]" style={{ color: CMP_COLORS[i] }}>
+                <span className="w-4 h-0.5 bg-current inline-block rounded" /> {sym}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {loading ? (
+          <div className="h-[180px] bg-[#111] rounded-lg animate-pulse" />
+        ) : growth10KData.length === 0 ? (
+          <p className="text-gray-600 text-sm text-center py-10">No data available</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={180}>
+            <ComposedChart data={growth10KData} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="g10kG" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor={stroke} stopOpacity={isComparing ? 0 : 0.25} />
+                  <stop offset="95%" stopColor={stroke} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="date" ticks={xTicks} tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} width={60}
+                tickFormatter={v => `$${v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v.toFixed(0)}`} />
+              <ReferenceLine y={10000} stroke="#3a3a3a" strokeDasharray="4 3"
+                label={{ value: '$10K', position: 'right', fill: '#4b5563', fontSize: 10 }} />
+              <Tooltip content={<GrowthTooltip />} />
+              {/* Primary symbol — area when solo, line when comparing */}
+              <Area type="monotone" dataKey={symbol} stroke={stroke} strokeWidth={2}
+                fill="url(#g10kG)" dot={false} isAnimationActive={false} />
+              {/* Compare symbols as lines */}
+              {compareSyms.map((sym, i) => (
+                <Line key={sym} type="monotone" dataKey={sym} stroke={CMP_COLORS[i]}
+                  strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false} />
+              ))}
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
       {/* Chart area */}
@@ -506,43 +583,6 @@ export default function PerformanceTab({ symbol }) {
         )}
       </div>
 
-      {/* Rolling returns */}
-      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h2 className="text-white font-semibold">Rolling {rollingWin} Returns — {symbol}</h2>
-          <div className="flex items-center gap-2">
-            <span className="text-gray-500 text-xs uppercase tracking-wider">Window</span>
-            <div className="flex gap-1.5">
-              {WINDOWS.map(w => (
-                <button key={w} onClick={() => setRollingWin(w)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                    rollingWin === w ? 'bg-indigo-600 text-white' : 'bg-[#111] border border-[#2a2a2a] text-gray-400 hover:text-white'
-                  }`}>{w}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        {loading ? (
-          <div className="h-[180px] bg-[#111] rounded-lg animate-pulse" />
-        ) : rollingData.length === 0 ? (
-          <p className="text-gray-600 text-sm text-center py-10">
-            {ohlcv.length === 0 ? 'No data available' : 'Not enough data — try a shorter window or longer duration.'}
-          </p>
-        ) : (
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={rollingData} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
-              <XAxis dataKey="date" hide />
-              <YAxis hide />
-              <ReferenceLine y={0} stroke="#3a3a3a" />
-              <Tooltip content={<RollingTooltip />} />
-              <Bar dataKey="ret" isAnimationActive={false} radius={[2, 2, 0, 0]}>
-                {rollingData.map((e, i) => <Cell key={i} fill={e.ret >= 0 ? '#22c55e' : '#ef4444'} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </div>
     </div>
   );
 }
